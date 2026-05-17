@@ -2,7 +2,7 @@
   "name": "homebridge-powerview-3",
   "displayName": "PowerView",
   "type": "module",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "Homebridge plugin for Hunter Douglas PowerView shades (Homebridge 2 compatible)",
   "license": "ISC",
   "keywords": [
