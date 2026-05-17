@@ -16,6 +16,7 @@ import {
   PowerViewPlatformAccessory,
   type CharacteristicCallback,
 } from './platformAccessory.js';
+import { formatError, logError, registerProcessErrorHandlers } from './errors.js';
 import {
   PLUGIN_NAME,
   PLATFORM_NAME,
@@ -26,6 +27,21 @@ import {
   type PowerViewPlatformConfig,
   type ShadeContext,
 } from './settings.js';
+
+function decodeBase64Name(encoded: string | undefined, fallback: string): string {
+  if (!encoded) {
+    return fallback;
+  }
+  try {
+    return Buffer.from(encoded, 'base64').toString();
+  } catch {
+    return encoded;
+  }
+}
+
+function shadeIdArray(value: unknown): number[] {
+  return Array.isArray(value) ? value.filter((id): id is number => typeof id === 'number') : [];
+}
 
 export class PowerViewPlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service;
@@ -55,16 +71,20 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
 
     this.log.info('PowerView init');
 
-    const host = config.host ?? 'powerview-hub.local';
+    registerProcessErrorHandlers(this.log, PLUGIN_NAME);
+
+    const host = typeof config.host === 'string' && config.host.length > 0
+      ? config.host
+      : 'powerview-hub.local';
     this.hub = new PowerViewHub(log, host);
 
     this.refreshShades = config.refreshShades === true;
     this.pollShadesForUpdate = config.pollShadesForUpdate === true;
 
-    this.forceRollerShades = config.forceRollerShades ?? [];
-    this.forceTopBottomShades = config.forceTopBottomShades ?? [];
-    this.forceHorizontalShades = config.forceHorizontalShades ?? [];
-    this.forceVerticalShades = config.forceVerticalShades ?? [];
+    this.forceRollerShades = shadeIdArray(config.forceRollerShades);
+    this.forceTopBottomShades = shadeIdArray(config.forceTopBottomShades);
+    this.forceHorizontalShades = shadeIdArray(config.forceHorizontalShades);
+    this.forceVerticalShades = shadeIdArray(config.forceVerticalShades);
 
     this.api.on('didFinishLaunching', () => {
       void this.onLaunch();
@@ -80,8 +100,7 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
         await this.updateShades();
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.log.error('Failed to start PowerView platform:', message);
+      logError(this.log, 'Failed to start PowerView platform:', err);
     }
   }
 
@@ -118,34 +137,53 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
   }
 
   configureAccessory(accessory: PlatformAccessory): void {
-    const shadeAccessory = accessory as PlatformAccessory<ShadeContext>;
-    this.log.info(
-      'Cached shade %d: %s',
-      shadeAccessory.context.shadeId,
-      shadeAccessory.displayName,
-    );
+    try {
+      const shadeAccessory = accessory as PlatformAccessory<ShadeContext>;
+      const shadeId = shadeAccessory.context.shadeId;
 
-    if (!shadeAccessory.context.shadeType) {
-      const topService = shadeAccessory.getServiceById(
-        this.Service.WindowCovering.UUID,
-        SUBTYPE.TOP,
+      if (typeof shadeId !== 'number' || !Number.isFinite(shadeId)) {
+        this.log.error(
+          'Cached accessory "%s" is missing a valid shadeId; remove it from Homebridge or re-discover shades.',
+          accessory.displayName,
+        );
+        return;
+      }
+
+      this.log.info('Cached shade %d: %s', shadeId, shadeAccessory.displayName);
+
+      if (!shadeAccessory.context.shadeType) {
+        const topService = shadeAccessory.getServiceById(
+          this.Service.WindowCovering.UUID,
+          SUBTYPE.TOP,
+        );
+        shadeAccessory.context.shadeType = topService ? ShadeKind.TOP_BOTTOM : ShadeKind.ROLLER;
+      }
+
+      this.registerHandler(shadeAccessory);
+    } catch (err) {
+      logError(
+        this.log,
+        `Failed to configure cached accessory "${accessory.displayName}":`,
+        err,
       );
-      shadeAccessory.context.shadeType = topService ? ShadeKind.TOP_BOTTOM : ShadeKind.ROLLER;
     }
-
-    this.registerHandler(shadeAccessory);
   }
 
   private registerHandler(accessory: PlatformAccessory<ShadeContext>): void {
     const shadeId = accessory.context.shadeId;
     this.accessories[shadeId] = accessory;
 
-    const handler = new PowerViewPlatformAccessory(this, accessory, this.log);
-    this.handlers.set(shadeId, handler);
+    try {
+      const handler = new PowerViewPlatformAccessory(this, accessory, this.log);
+      this.handlers.set(shadeId, handler);
+    } catch (err) {
+      delete this.accessories[shadeId];
+      logError(this.log, `Failed to register shade handler for ${shadeId}:`, err);
+    }
   }
 
   private addShadeAccessory(shade: PowerViewShade): PlatformAccessory<ShadeContext> {
-    const name = Buffer.from(shade.name, 'base64').toString();
+    const name = decodeBase64Name(shade.name, `Shade ${shade.id}`);
     this.log.info('Adding shade %d: %s', shade.id, name);
 
     const uuid = this.api.hap.uuid.generate(shade.id.toString());
@@ -188,14 +226,23 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
     const newShades: Record<number, PlatformAccessory<ShadeContext>> = {};
 
     for (const shade of shadeData) {
-      if (!this.accessories[shade.id]) {
-        newShades[shade.id] = this.addShadeAccessory(shade);
-      } else {
-        newShades[shade.id] = this.updateShadeAccessory(shade);
+      if (typeof shade.id !== 'number' || !Number.isFinite(shade.id)) {
+        this.log.warn('Skipping shade with invalid id from hub response');
+        continue;
       }
 
-      const handler = this.handlers.get(shade.id);
-      handler?.updateShadeValues(shade);
+      try {
+        if (!this.accessories[shade.id]) {
+          newShades[shade.id] = this.addShadeAccessory(shade);
+        } else {
+          newShades[shade.id] = this.updateShadeAccessory(shade);
+        }
+
+        const handler = this.handlers.get(shade.id);
+        handler?.updateShadeValues(shade);
+      } catch (err) {
+        logError(this.log, `Failed to process shade ${shade.id}:`, err);
+      }
     }
 
     for (const shadeId of Object.keys(this.accessories)) {
@@ -207,14 +254,18 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
   }
 
   private pollShades(): void {
-    void this.updateShades().finally(() => {
-      setTimeout(() => this.pollShades(), SHADE_POLL_INTERVAL_MS);
-    });
+    void this.updateShades()
+      .catch((err) => {
+        logError(this.log, 'Failed to poll shades from hub:', err);
+      })
+      .finally(() => {
+        setTimeout(() => this.pollShades(), SHADE_POLL_INTERVAL_MS);
+      });
   }
 
   async updateHubInfo(): Promise<void> {
     const userData = await this.hub.getUserData();
-    this.hubName = Buffer.from(userData.hubName, 'base64').toString();
+    this.hubName = decodeBase64Name(userData.hubName, 'PowerView Hub');
     if (userData.firmware?.mainProcessor) {
       this.hubVersion = userData.firmware.mainProcessor.name;
     }
@@ -253,7 +304,8 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
         callback(null, value ?? 0);
       }
     } catch (err) {
-      callback(err instanceof Error ? err : new Error(String(err)));
+      logError(this.log, `getPosition failed for shade ${shadeId}/${position}:`, err);
+      callback(err instanceof Error ? err : new Error(formatError(err)));
     }
   }
 
@@ -323,7 +375,8 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
       handler?.updateShadeValues(shade, true);
       callback(null);
     } catch (err) {
-      callback(err instanceof Error ? err : new Error(String(err)));
+      logError(this.log, `setPosition failed for shade ${shadeId}/${position}:`, err);
+      callback(err instanceof Error ? err : new Error(formatError(err)));
     }
   }
 

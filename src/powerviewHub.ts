@@ -1,5 +1,7 @@
 import type { Logging } from 'homebridge';
 
+import { formatError, logError } from './errors.js';
+
 const INITIAL_REQUEST_DELAY_MS = 100;
 const REQUEST_INTERVAL_MS = 100;
 
@@ -54,11 +56,21 @@ export class PowerViewHub {
   }
 
   private async fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-    const response = await fetch(url, init);
-    if (!response.ok) {
-      throw new Error(`HTTP Error ${response.status}`);
+    try {
+      const response = await fetch(url, init);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status} ${response.statusText} for ${url}`);
+      }
+      return await response.json() as T;
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith('HTTP ')) {
+        throw err;
+      }
+      throw new Error(
+        `Failed to reach PowerView hub at ${this.host} (${url})`,
+        { cause: err },
+      );
     }
-    return response.json() as Promise<T>;
   }
 
   private queueRequest(queued: QueuedRequest): void {
@@ -70,7 +82,9 @@ export class PowerViewHub {
 
   private scheduleRequest(delay: number): void {
     setTimeout(() => {
-      void this.processQueue();
+      void this.processQueue().catch((err) => {
+        logError(this.log, 'Failed to process hub request queue:', err);
+      });
     }, delay);
   }
 
@@ -103,8 +117,8 @@ export class PowerViewHub {
         callback(null, json.shade);
       }
     } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      this.log.error('Error on shade request:', error.message);
+      const error = err instanceof Error ? err : new Error(formatError(err));
+      logError(this.log, `Error on shade request for shade ${queued.shadeId}:`, error);
       for (const callback of queued.callbacks) {
         callback(error);
       }
@@ -117,12 +131,18 @@ export class PowerViewHub {
   }
 
   async getUserData(): Promise<HubUserData> {
-    const json = await this.fetchJson<{ userData: HubUserData }>(this.baseUrl('/api/userdata'));
+    const json = await this.fetchJson<{ userData?: HubUserData }>(this.baseUrl('/api/userdata'));
+    if (!json.userData) {
+      throw new Error('Hub returned no userData from /api/userdata');
+    }
     return json.userData;
   }
 
   async getShades(): Promise<PowerViewShade[]> {
-    const json = await this.fetchJson<{ shadeData: PowerViewShade[] }>(this.baseUrl('/api/shades'));
+    const json = await this.fetchJson<{ shadeData?: PowerViewShade[] }>(this.baseUrl('/api/shades'));
+    if (!Array.isArray(json.shadeData)) {
+      throw new Error('Hub returned no shadeData from /api/shades');
+    }
     return json.shadeData;
   }
 
@@ -160,7 +180,12 @@ export class PowerViewHub {
       });
     }
 
-    const json = await this.fetchJson<{ shade: PowerViewShade }>(this.baseUrl(`/api/shades/${shadeId}`));
+    const json = await this.fetchJson<{ shade?: PowerViewShade }>(
+      this.baseUrl(`/api/shades/${shadeId}`),
+    );
+    if (!json.shade) {
+      throw new Error(`Hub returned no shade data for shade ${shadeId}`);
+    }
     return json.shade;
   }
 
