@@ -1,89 +1,113 @@
-# homebridge-powerview-2
-[![npm](https://img.shields.io/npm/v/homebridge-powerview-2.svg)](https://www.npmjs.com/package/homebridge-powerview-2)
-[![npm](https://img.shields.io/npm/dt/homebridge-powerview-2.svg)](https://www.npmjs.com/package/homebridge-powerview-2)
+# homebridge-powerview-3
 
-**The PowerView homekit integration worked too slow for me and was unresponsive a lot of times thats why i forked this old plugin and made it kinda working again**
+[![npm](https://img.shields.io/npm/v/homebridge-powerview-3.svg)](https://www.npmjs.com/package/homebridge-powerview-3)
+[![npm](https://img.shields.io/npm/dt/homebridge-powerview-3.svg)](https://www.npmjs.com/package/homebridge-powerview-3)
 
-**Pull requests welcome!**
+Homebridge plugin for [Hunter Douglas PowerView](https://www.hunterdouglas.com/operating-systems/motorized/powerview-motorization) window shades. Compatible with **Homebridge 1.8+** and **Homebridge 2.x** (Node.js 22 or 24).
 
-This is a plugin for [Homebridge](https://github.com/nfarina/homebridge) to provide [HomeKit](https://www.apple.com/uk/ios/home/) support for [Hunter Douglas PowerView](https://www.hunterdouglas.com/operating-systems/motorized/powerview-motorization) window shades.
+Supports Generation 1 and 2 PowerView hubs.
 
-Supports both the Generation 1 and 2 hubs.
+## Requirements
 
-Supported Shades:
+- [Homebridge](https://github.com/homebridge/homebridge) **1.8.0** or **2.0.0**
+- Node.js **22** or **24**
 
- * Roller Shades.
- * Shades with Horizontal Vanes (e.g. Silhouette, Pirouette). The main accessory controls the vertical movement of the shades, and a slider under Details controls the tilt of the vanes when closed.
- * Shades with Vertical Vanes (e.g. Luminette). The main accessory controls the horizontal movement of the shades, and a slider under Details controls the tilt of the vanes when closed.
- * Top-Down/Bottom-Up Shades (e.g. Duette). You will get two accessories, one for the bottom of the shade, and one of the top. They can be controlled independently or combined using HomeKit scenes.
+## Supported shades
 
-Shades can participate in HomeKit scenes and automations.
+- Roller shades
+- Horizontal vane shades (e.g. Silhouette, Pirouette) — position plus tilt in Details
+- Vertical vane shades (e.g. Luminette) — position plus tilt in Details
+- Top-down/bottom-up shades (e.g. Duette) — two Window Covering services per shade
+
+Shades work in HomeKit scenes and automations.
 
 ## Installation
 
-1. Install and setup [Homebridge](https://github.com/nfarina/homebridge).
+1. Install and set up [Homebridge](https://github.com/homebridge/homebridge).
+2. Install the plugin (Homebridge UI **Plugins** tab, or CLI):
 
-2. Install this plugin:
+```bash
+npm install -g homebridge-powerview-3
 ```
-npm install -g homebridge-powerview-2
-```
-3. Add the `PowerView` Platform to your Homebridge `config.json`:
 
+3. Add the **PowerView** platform via the plugin **Settings** button in the Homebridge UI, or add a platform block to `config.json`:
+
+```json
+"platforms": [
+  {
+    "platform": "PowerView",
+    "name": "PowerView"
+  }
+]
 ```
-    "platforms" : [
-        {   
-            "platform" : "PowerView"
-        }
-    ]
-```
+
+The hub is contacted at `powerview-hub.local` by default.
 
 ## Configuration
 
-Just specifying the platform should work for more people, the hub will be found using the default `powerview-hub.local` mDNS hostname.
+| Option | Description | Default |
+|--------|-------------|---------|
+| `name` | Platform name in Homebridge | `PowerView` |
+| `host` | Hub hostname or IP | `powerview-hub.local` |
+| `refreshShades` | Request fresh positions from the hub on every HomeKit read | `false` |
+| `pollShadesForUpdate` | Poll the hub every 30 seconds for position updates | `false` |
+| `forceRollerShades` | Shade IDs to treat as roller | `[]` |
+| `forceTopBottomShades` | Shade IDs to treat as top/bottom | `[]` |
+| `forceHorizontalShades` | Shade IDs to treat as horizontal vane | `[]` |
+| `forceVerticalShades` | Shade IDs to treat as vertical vane | `[]` |
 
-### Hostname or IP
+Example with host and polling:
 
-If your PowerView hub is configured with a different default hostname, you can specify that, or the hub's IP address, by adding a `host` key to the platform configuration:
-
-```
-"host" : "192.168.1.1"
-```
-
-### Shade Types
-
-The plugin uses the information from the PowerView hub to determine the types of shades, however it doesn't yet know all of the possible values. You may see the following warning in your log:
-
-```
-*** Shade 12345 has unknown type 66, assuming roller ***
-```
-
-If you see this, first please file an issue and provide details about the kind of shade that this is, so I can correctly recognize it in future versions.
-
-You can then add a `forceRollerShades`, `forceTopBottomShades`, `forceHorizontalShades`, or `forceVerticalShades` key to your `config.json` to force shades to be a certain type, e.g.:
-
-```
-"forceTopBottomShades": [ 12345, 98765 ]
+```json
+{
+  "platform": "PowerView",
+  "name": "PowerView",
+  "host": "192.168.1.50",
+  "pollShadesForUpdate": true
+}
 ```
 
-## Shade Examples
+### Unknown shade types
 
-For all shades, you can tab the accessory icons in the Home app to open and close the shades, or long-press to set any arbitrary position between closed and 100% open.
+If the hub reports an unknown shade type, the log may show:
 
-![Roller Shades](https://i.imgur.com/Ti2mc5z.png)
+```
+Shade 12345 has unknown type 66, assuming roller
+```
 
-### Horizontal and Vertical Shades
+Please [open an issue](https://github.com/squircle12/homebridge-powerview-3/issues) with the shade model. You can override detection with the `force*` arrays above.
 
-For shades with horizontal or vertical vanes, after long-pressing you can tap Details to adjust the tilt angle. For horizontal shades this will range from 0&deg; to 90&deg;, where the vanes are closed at 0&deg;, and the vanes tilted fully open at 90&deg;. For vertical shades it will range from -90&deg; to 90&deg;, with the shades fully open at 0&deg;, and fully closed in either direction at -90&deg; and 90&deg;.
+## Migrating from homebridge-powerview-2
 
-Adjusting the vane tilt angle will automatically close the shades if necessary, likewise adjusting the standard shade position will automatically return the vanes to 0&deg;. When creating scenes, you should ensure that if the scene intends to tilt the vanes, the shade is Closed in the scene; likewise if the scene is intended to set a shade position, that the tilt is set to 0&deg;. HomeKit isn't smart enough to update the scene itself.
+1. Stop Homebridge.
+2. Uninstall the old plugin: `npm uninstall -g homebridge-powerview-2`
+3. Install `homebridge-powerview-3`.
+4. Update your config: keep `"platform": "PowerView"` and add `"name": "PowerView"` if missing.
+5. Remove any old **PowerView** platform entry that pointed at the v2 package, then add the platform again for v3.
+6. Restart Homebridge.
 
-![Horizontal Shades](https://i.imgur.com/CPNtR4g.png)
+The plugin identifier changed from `homebridge-powerview` to `homebridge-powerview-3`. Cached accessories from the old package may appear as duplicates in the Home app. Remove ghost accessories from Home if needed.
 
-### Top-Down/Bottom-Up Shades
+## Shade examples
 
-For shades with a movable top and bottom, two accessory controls will be created; one for the movable bottom of the shade, and the other for the movable top.
+Tap an accessory to open/close; long-press for a custom position.
 
-These can be controlled independantly, or combined in scenes.
+### Horizontal and vertical vanes
 
-![Top-Down/Bottom-Up Shades](https://i.imgur.com/ZFZXuPK.png)
-![Top-Down/Bottom-Up Scene](https://i.imgur.com/ylG0Yrp.png)
+Use **Details** after a long-press to adjust tilt. For scenes: use **Closed** when setting vane tilt; use **0°** tilt when setting position.
+
+### Top-down/bottom-up
+
+Two controls are created per shade (bottom and top), which can be used independently or in scenes.
+
+## Development
+
+```bash
+npm install
+npm run build
+npm run lint
+```
+
+## License
+
+ISC

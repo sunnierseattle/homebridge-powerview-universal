@@ -1,0 +1,57 @@
+{
+  "pluginAlias": "PowerView",
+  "pluginType": "platform",
+  "singular": true,
+  "strictValidation": false,
+  "schema": {
+    "type": "object",
+    "required": ["name"],
+    "additionalProperties": false,
+    "properties": {
+      "name": {
+        "title": "Name",
+        "type": "string",
+        "default": "PowerView"
+      },
+      "host": {
+        "title": "Hub host",
+        "type": "string",
+        "description": "Hostname or IP of the PowerView hub.",
+        "placeholder": "powerview-hub.local"
+      },
+      "refreshShades": {
+        "title": "Refresh on read",
+        "type": "boolean",
+        "default": false,
+        "description": "Request fresh shade positions from the hub on every HomeKit read."
+      },
+      "pollShadesForUpdate": {
+        "title": "Poll every 30 seconds",
+        "type": "boolean",
+        "default": false,
+        "description": "Periodically poll the hub for shade position updates."
+      },
+      "forceRollerShades": {
+        "title": "Force roller shade IDs",
+        "type": "array",
+        "items": { "type": "integer" },
+        "description": "Treat these shade IDs as roller shades regardless of hub type."
+      },
+      "forceTopBottomShades": {
+        "title": "Force top/bottom shade IDs",
+        "type": "array",
+        "items": { "type": "integer" }
+      },
+      "forceHorizontalShades": {
+        "title": "Force horizontal vane shade IDs",
+        "type": "array",
+        "items": { "type": "integer" }
+      },
+      "forceVerticalShades": {
+        "title": "Force vertical vane shade IDs",
+        "type": "array",
+        "items": { "type": "integer" }
+      }
+    }
+  }
+}
