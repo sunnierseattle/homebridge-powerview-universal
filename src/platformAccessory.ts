@@ -7,11 +7,20 @@ import type {
 
 import { HubPosition, type PowerViewShade } from './powerviewHub.js';
 import type { PowerViewPlatform } from './platform.js';
+import {
+  POSITION_KIND_ERROR,
+  decodeBase64Name,
+  formatShadeFirmware,
+  isLowBattery,
+} from './shadeUtils.js';
 import { ShadeKind, SUBTYPE, type ShadeContext } from './settings.js';
 
 type PositionMap = Partial<Record<HubPosition, number>> | null;
 
 export class PowerViewPlatformAccessory {
+  private lastShade?: PowerViewShade;
+  private holdPositionWired = false;
+
   constructor(
     private readonly platform: PowerViewPlatform,
     public readonly accessory: PlatformAccessory<ShadeContext>,
@@ -61,15 +70,18 @@ export class PowerViewPlatformAccessory {
     return undefined;
   }
 
-  private ensureWindowCoveringService(subtype: string): Service {
+  private ensureWindowCoveringService(subtype: string, displayName?: string): Service {
     const existing = this.resolveWindowCoveringService(subtype);
     if (existing) {
+      if (displayName) {
+        existing.setCharacteristic(this.Characteristic.Name, displayName);
+      }
       return existing;
     }
 
     return this.accessory.addService(
       this.Service.WindowCovering,
-      this.accessory.displayName,
+      displayName ?? this.accessory.displayName,
       subtype,
     );
   }
@@ -81,6 +93,41 @@ export class PowerViewPlatformAccessory {
       .on('get', (callback) => {
         const current = service.getCharacteristic(this.Characteristic.CurrentPosition).value;
         callback(null, typeof current === 'number' ? current : 0);
+      });
+  }
+
+  private wireHoldPosition(service: Service): void {
+    if (this.holdPositionWired || this.accessory.context.jogSupported === false) {
+      return;
+    }
+
+    const hold = service.getCharacteristic(this.Characteristic.HoldPosition);
+    hold.removeAllListeners('set');
+    hold.on('set', (value, callback) => {
+      if (value === true || value === 1) {
+        void this.platform.jogShade(this.shadeId).then(() => {
+          callback(null);
+        }).catch((err) => {
+          callback(err instanceof Error ? err : new Error(String(err)));
+        });
+      } else {
+        callback(null);
+      }
+    });
+    this.holdPositionWired = true;
+  }
+
+  private wireIdentify(): void {
+    const info = this.accessory.getService(this.Service.AccessoryInformation);
+    if (!info) {
+      return;
+    }
+
+    info
+      .getCharacteristic(this.Characteristic.Identify)
+      .removeAllListeners('set')
+      .on('set', () => {
+        void this.platform.jogShadeOnIdentify(this.shadeId);
       });
   }
 
@@ -100,6 +147,9 @@ export class PowerViewPlatformAccessory {
 
   configure(): void {
     const shadeId = this.shadeId;
+    const topDisplayName = this.lastShade?.secondaryName
+      ? decodeBase64Name(this.lastShade.secondaryName, this.accessory.displayName)
+      : undefined;
 
     const service = this.ensureWindowCoveringService(SUBTYPE.BOTTOM);
     this.applyCoveringPosition(service, 0);
@@ -112,6 +162,7 @@ export class PowerViewPlatformAccessory {
       });
 
     this.wireTargetPositionGet(service);
+    this.wireHoldPosition(service);
 
     service
       .getCharacteristic(this.Characteristic.TargetPosition)
@@ -161,7 +212,9 @@ export class PowerViewPlatformAccessory {
     let topService = this.resolveWindowCoveringService(SUBTYPE.TOP);
     if (this.shadeType === ShadeKind.TOP_BOTTOM) {
       if (!topService) {
-        topService = this.ensureWindowCoveringService(SUBTYPE.TOP);
+        topService = this.ensureWindowCoveringService(SUBTYPE.TOP, topDisplayName);
+      } else if (topDisplayName) {
+        topService.setCharacteristic(this.Characteristic.Name, topDisplayName);
       }
       this.applyCoveringPosition(topService, 0);
 
@@ -184,6 +237,7 @@ export class PowerViewPlatformAccessory {
       this.accessory.removeService(topService);
     }
 
+    this.wireIdentify();
     this.updateAccessoryInformation();
   }
 
@@ -210,32 +264,61 @@ export class PowerViewPlatformAccessory {
     }
   }
 
-  updateAccessoryInformation(): void {
+  updateAccessoryInformation(shade?: PowerViewShade): void {
+    const shadeData = shade ?? this.lastShade;
     let info = this.accessory.getService(this.Service.AccessoryInformation);
     if (!info) {
       info = this.accessory.addService(this.Service.AccessoryInformation);
     }
-    info
-      .setCharacteristic(this.Characteristic.Manufacturer, 'Hunter Douglas')
-      .setCharacteristic(
-        this.Characteristic.Model,
-        this.platform.hubVersion ?? 'PowerView',
-      )
-      .setCharacteristic(this.Characteristic.SerialNumber, String(this.shadeId));
+
+    info.setCharacteristic(this.Characteristic.Manufacturer, 'Hunter Douglas');
+    info.setCharacteristic(
+      this.Characteristic.Model,
+      this.platform.hubVersion ?? 'PowerView',
+    );
+    info.setCharacteristic(this.Characteristic.SerialNumber, String(this.shadeId));
+
+    const firmwareRevision = formatShadeFirmware(shadeData?.firmware);
+    if (firmwareRevision) {
+      info.setCharacteristic(this.Characteristic.FirmwareRevision, firmwareRevision);
+    }
+
+    if (shadeData && isLowBattery(shadeData.batteryStatus, shadeData.batteryStrength)) {
+      info.setCharacteristic(this.Characteristic.StatusLowBattery, 1);
+    } else if (shadeData && (shadeData.batteryStatus != null || shadeData.batteryStrength != null)) {
+      info.setCharacteristic(this.Characteristic.StatusLowBattery, 0);
+    }
   }
 
   updateShadeValues(shade: PowerViewShade, current = false): PositionMap {
+    this.lastShade = shade;
     const positions: PositionMap = {};
 
+    if (shade.secondaryName && this.shadeType === ShadeKind.TOP_BOTTOM) {
+      const topService = this.resolveWindowCoveringService(SUBTYPE.TOP);
+      const topName = decodeBase64Name(shade.secondaryName, this.accessory.displayName);
+      if (topService) {
+        topService.setCharacteristic(this.Characteristic.Name, topName);
+      }
+    }
+
+    this.updateAccessoryInformation(shade);
+
     if (!shade.positions) {
+      this.platform.cachePositions(shade.id, positions);
       return positions;
     }
 
     this.log.info('Set for', shade.id, { positions: shade.positions });
 
-    for (let i = 1; shade.positions[`posKind${i}`]; ++i) {
+    for (let i = 1; shade.positions[`posKind${i}`] != null; ++i) {
       const position = shade.positions[`posKind${i}`];
       const hubValue = shade.positions[`position${i}`];
+
+      if (position === POSITION_KIND_ERROR) {
+        this.platform.warnPositionKindErrorOnce(shade.id);
+        continue;
+      }
 
       if (position === HubPosition.BOTTOM) {
         positions[HubPosition.BOTTOM] = Math.round(100 * hubValue / 65535);
@@ -322,6 +405,7 @@ export class PowerViewPlatformAccessory {
       }
     }
 
+    this.platform.cachePositions(shade.id, positions);
     return positions;
   }
 }

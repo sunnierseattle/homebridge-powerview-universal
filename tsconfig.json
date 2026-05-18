@@ -19,5 +19,8 @@
   "include": [
     "eslint.config.js",
     "src"
+  ],
+  "exclude": [
+    "src/**/*.test.ts"
   ]
 }

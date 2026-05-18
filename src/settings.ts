@@ -12,6 +12,9 @@ export const PLUGIN_NAME = 'homebridge-powerview-3';
 
 export const SHADE_POLL_INTERVAL_MS = 30_000;
 
+/** Interval for optional hub battery-level refresh (API: updateBatteryLevel query). */
+export const BATTERY_POLL_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
 export enum ShadeKind {
   ROLLER = 1,
   TOP_BOTTOM = 2,
@@ -35,6 +38,7 @@ export interface PowerViewPlatformConfig extends PlatformConfig {
   host?: string;
   refreshShades?: boolean;
   pollShadesForUpdate?: boolean;
+  strictErrors?: boolean;
   forceRollerShades?: number[];
   forceTopBottomShades?: number[];
   forceHorizontalShades?: number[];
@@ -44,4 +48,6 @@ export interface PowerViewPlatformConfig extends PlatformConfig {
 export interface ShadeContext {
   shadeId: number;
   shadeType: ShadeKind;
+  /** False when the hub rejected motion jog for this shade. */
+  jogSupported?: boolean;
 }

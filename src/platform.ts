@@ -8,6 +8,15 @@ import type {
 } from 'homebridge';
 
 import {
+  HubError,
+  HubErrorCode,
+  formatError,
+  isHubError,
+  logError,
+  registerProcessErrorHandlers,
+} from './errors.js';
+import { type HubCapabilities, probeHubCapabilities } from './hubCapabilities.js';
+import {
   HubPosition,
   PowerViewHub,
   type PowerViewShade,
@@ -16,8 +25,9 @@ import {
   PowerViewPlatformAccessory,
   type CharacteristicCallback,
 } from './platformAccessory.js';
-import { formatError, logError, registerProcessErrorHandlers } from './errors.js';
+import { POSITION_KIND_ERROR, decodeBase64Name } from './shadeUtils.js';
 import {
+  BATTERY_POLL_INTERVAL_MS,
   PLUGIN_NAME,
   PLATFORM_NAME,
   SHADE_POLL_INTERVAL_MS,
@@ -28,20 +38,11 @@ import {
   type ShadeContext,
 } from './settings.js';
 
-function decodeBase64Name(encoded: string | undefined, fallback: string): string {
-  if (!encoded) {
-    return fallback;
-  }
-  try {
-    return Buffer.from(encoded, 'base64').toString();
-  } catch {
-    return encoded;
-  }
-}
-
 function shadeIdArray(value: unknown): number[] {
   return Array.isArray(value) ? value.filter((id): id is number => typeof id === 'number') : [];
 }
+
+type PositionMap = Partial<Record<HubPosition, number>>;
 
 export class PowerViewPlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service;
@@ -51,15 +52,22 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
   private readonly handlers: Map<number, PowerViewPlatformAccessory> = new Map();
 
   public hubVersion?: string;
+  public hubCapabilities?: HubCapabilities;
   private hubName?: string;
 
   private readonly hub: PowerViewHub;
   private readonly refreshShades: boolean;
   private readonly pollShadesForUpdate: boolean;
+  private readonly strictErrors: boolean;
   private readonly forceRollerShades: number[];
   private readonly forceTopBottomShades: number[];
   private readonly forceHorizontalShades: number[];
   private readonly forceVerticalShades: number[];
+
+  private readonly lastPositions = new Map<number, PositionMap>();
+  private readonly batteryRefreshDisabled = new Set<number>();
+  private readonly posKindErrorLogged = new Set<number>();
+  private batteryPollTimer?: ReturnType<typeof setInterval>;
 
   constructor(
     public readonly log: Logging,
@@ -80,6 +88,7 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
 
     this.refreshShades = config.refreshShades === true;
     this.pollShadesForUpdate = config.pollShadesForUpdate === true;
+    this.strictErrors = config.strictErrors === true;
 
     this.forceRollerShades = shadeIdArray(config.forceRollerShades);
     this.forceTopBottomShades = shadeIdArray(config.forceTopBottomShades);
@@ -99,9 +108,23 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
       } else {
         await this.updateShades();
       }
+      this.scheduleBatteryPoll();
     } catch (err) {
       logError(this.log, 'Failed to start PowerView platform:', err);
     }
+  }
+
+  cachePositions(shadeId: number, positions: PositionMap | null): void {
+    if (!positions) {
+      return;
+    }
+    const existing = this.lastPositions.get(shadeId) ?? {};
+    this.lastPositions.set(shadeId, { ...existing, ...positions });
+  }
+
+  getCachedPosition(shadeId: number, position: HubPosition): number | undefined {
+    const cached = this.lastPositions.get(shadeId)?.[position];
+    return typeof cached === 'number' && Number.isFinite(cached) ? cached : undefined;
   }
 
   shadeType(shade: PowerViewShade): ShadeKind {
@@ -161,6 +184,10 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
         shadeAccessory.context.shadeType = topService ? ShadeKind.TOP_BOTTOM : ShadeKind.ROLLER;
       }
 
+      if (shadeAccessory.context.jogSupported === undefined) {
+        shadeAccessory.context.jogSupported = true;
+      }
+
       this.registerHandler(shadeAccessory);
     } catch (err) {
       logError(
@@ -204,6 +231,7 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
     );
     accessory.context.shadeId = shade.id;
     accessory.context.shadeType = this.shadeType(shade);
+    accessory.context.jogSupported = true;
 
     this.registerHandler(accessory);
     this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
@@ -233,10 +261,19 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
     this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
     delete this.accessories[accessory.context.shadeId];
     this.handlers.delete(accessory.context.shadeId);
+    this.lastPositions.delete(accessory.context.shadeId);
+    this.batteryRefreshDisabled.delete(accessory.context.shadeId);
   }
 
   async updateShades(): Promise<void> {
-    const shadeData = await this.hub.getShades();
+    let shadeData: PowerViewShade[];
+    try {
+      shadeData = await this.hub.getShades();
+    } catch (err) {
+      logError(this.log, 'Failed to list shades from hub:', err);
+      return;
+    }
+
     const newShades: Record<number, PlatformAccessory<ShadeContext>> = {};
 
     for (const shade of shadeData) {
@@ -258,8 +295,13 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
 
         const handler = this.handlers.get(shade.id);
         if (handler) {
-          const shadeState = await this.hub.getShade(shade.id);
-          handler.updateShadeValues(shadeState);
+          handler.updateShadeValues(shade);
+          try {
+            const shadeState = await this.hub.getShade(shade.id);
+            handler.updateShadeValues(shadeState);
+          } catch (err) {
+            logError(this.log, `Failed to fetch shade ${shade.id} state:`, err);
+          }
         }
       } catch (err) {
         logError(this.log, `Failed to process shade ${shade.id}:`, err);
@@ -284,6 +326,36 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
       });
   }
 
+  private scheduleBatteryPoll(): void {
+    if (this.batteryPollTimer) {
+      clearInterval(this.batteryPollTimer);
+    }
+    this.batteryPollTimer = setInterval(() => {
+      void this.pollBatteryLevels();
+    }, BATTERY_POLL_INTERVAL_MS);
+  }
+
+  private async pollBatteryLevels(): Promise<void> {
+    for (const shadeId of Object.keys(this.accessories)) {
+      const id = parseInt(shadeId, 10);
+      if (this.batteryRefreshDisabled.has(id)) {
+        continue;
+      }
+      try {
+        const shade = await this.hub.getShade(id, { updateBatteryLevel: true });
+        const handler = this.handlers.get(id);
+        handler?.updateShadeValues(shade);
+      } catch (err) {
+        if (isHubError(err) && (err.code === HubErrorCode.NotFound || err.code === HubErrorCode.BadRequest)) {
+          this.batteryRefreshDisabled.add(id);
+          this.log.debug('Battery refresh not supported for shade %d', id);
+        } else {
+          this.log.warn('Battery refresh failed for shade %d:', id, err instanceof Error ? err.message : String(err));
+        }
+      }
+    }
+  }
+
   async updateHubInfo(): Promise<void> {
     const userData = await this.hub.getUserData();
     this.hubName = decodeBase64Name(userData.hubName, 'PowerView Hub');
@@ -293,6 +365,19 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
 
     this.log.info('Hub: %s', this.hubName);
 
+    try {
+      this.hubCapabilities = await probeHubCapabilities(this.hub, this.log, this.hubVersion);
+      this.log.info(
+        'Hub capabilities: fwversion=%s scenes=%s sceneCollections=%s generation=%s',
+        this.hubCapabilities.fwVersionSupported,
+        this.hubCapabilities.scenesSupported,
+        this.hubCapabilities.sceneCollectionsSupported,
+        this.hubCapabilities.generationHint,
+      );
+    } catch (err) {
+      logError(this.log, 'Hub capability probe failed (continuing with shades only):', err);
+    }
+
     for (const handler of this.handlers.values()) {
       handler.updateAccessoryInformation();
     }
@@ -301,10 +386,11 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
   private async updateShade(
     shadeId: number,
     refresh = false,
-  ): Promise<{ positions: Partial<Record<HubPosition, number>> | null; timedOut?: boolean }> {
-    const shade = await this.hub.getShade(shadeId, refresh);
+  ): Promise<{ positions: PositionMap | null; timedOut?: boolean }> {
+    const shade = await this.hub.getShade(shadeId, { refresh });
     const handler = this.handlers.get(shadeId);
     const positions = handler?.updateShadeValues(shade) ?? null;
+    this.cachePositions(shadeId, positions);
     return { positions, timedOut: refresh ? shade.timedOut : undefined };
   }
 
@@ -320,14 +406,34 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
       if (!this.refreshShades && value == null) {
         this.log.info('refresh %d/%d', shadeId, position);
         const refreshed = await this.updatePosition(shadeId, position, true);
-        callback(null, refreshed ?? 0);
+        callback(null, this.resolvePositionValue(shadeId, position, refreshed));
       } else {
-        callback(null, value ?? 0);
+        callback(null, this.resolvePositionValue(shadeId, position, value));
       }
     } catch (err) {
-      logError(this.log, `getPosition failed for shade ${shadeId}/${position}:`, err);
-      callback(err instanceof Error ? err : new Error(formatError(err)));
+      if (this.strictErrors) {
+        logError(this.log, `getPosition failed for shade ${shadeId}/${position}:`, err);
+        callback(err instanceof Error ? err : new Error(formatError(err)));
+        return;
+      }
+      logError(this.log, `getPosition failed for shade ${shadeId}/${position}, using cache:`, err);
+      callback(null, this.resolvePositionValue(shadeId, position, null));
     }
+  }
+
+  private resolvePositionValue(
+    shadeId: number,
+    position: HubPosition,
+    value: number | null | undefined,
+  ): number {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+    const cached = this.getCachedPosition(shadeId, position);
+    if (cached != null) {
+      return cached;
+    }
+    return 0;
   }
 
   private async updatePosition(
@@ -338,13 +444,16 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
     const { positions, timedOut } = await this.updateShade(shadeId, refresh);
 
     if (refresh && timedOut) {
-      this.log.warn('Timeout for %d/%d', shadeId, position);
-      throw new Error('Timed out');
+      this.log.warn('Shade %d did not respond to refresh; using cached position for %d', shadeId, position);
+      if (this.strictErrors) {
+        throw new HubError('Shade refresh timed out', HubErrorCode.HttpError);
+      }
+      return this.getCachedPosition(shadeId, position) ?? null;
     }
 
     if (!positions) {
       this.log.warn('Hub did not return positions for %d/%d', shadeId, position);
-      return null;
+      return this.getCachedPosition(shadeId, position) ?? null;
     }
 
     const value = positions[position];
@@ -354,7 +463,7 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
     }
 
     this.log.warn('Invalid position value received for %d/%d', shadeId, position);
-    return 0;
+    return this.getCachedPosition(shadeId, position) ?? null;
   }
 
   async setPosition(
@@ -393,7 +502,8 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
     try {
       const shade = await this.hub.putShade(shadeId, position, hubValue, value);
       const handler = this.handlers.get(shadeId);
-      handler?.updateShadeValues(shade, true);
+      const positions = handler?.updateShadeValues(shade, true) ?? null;
+      this.cachePositions(shadeId, positions);
       callback(null);
     } catch (err) {
       logError(this.log, `setPosition failed for shade ${shadeId}/${position}:`, err);
@@ -402,8 +512,45 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
   }
 
   async jogShade(shadeId: number): Promise<Partial<Record<HubPosition, number>> | null> {
-    const shade = await this.hub.jogShade(shadeId);
-    const handler = this.handlers.get(shadeId);
-    return handler?.updateShadeValues(shade) ?? null;
+    const accessory = this.accessories[shadeId];
+    if (accessory?.context.jogSupported === false) {
+      return null;
+    }
+
+    try {
+      const shade = await this.hub.jogShade(shadeId);
+      const handler = this.handlers.get(shadeId);
+      const positions = handler?.updateShadeValues(shade) ?? null;
+      this.cachePositions(shadeId, positions);
+      return positions;
+    } catch (err) {
+      if (
+        isHubError(err)
+        && (err.code === HubErrorCode.NotFound || err.code === HubErrorCode.BadRequest)
+      ) {
+        if (accessory) {
+          accessory.context.jogSupported = false;
+        }
+        this.log.warn('Jog motion not supported for shade %d', shadeId);
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  async jogShadeOnIdentify(shadeId: number): Promise<void> {
+    try {
+      await this.jogShade(shadeId);
+    } catch (err) {
+      logError(this.log, `Identify/jog failed for shade ${shadeId}:`, err);
+    }
+  }
+
+  warnPositionKindErrorOnce(shadeId: number): void {
+    if (this.posKindErrorLogged.has(shadeId)) {
+      return;
+    }
+    this.posKindErrorLogged.add(shadeId);
+    this.log.warn('Shade %d reported position kind error (%d) from hub', shadeId, POSITION_KIND_ERROR);
   }
 }

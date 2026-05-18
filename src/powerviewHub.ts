@@ -1,9 +1,12 @@
 import type { Logging } from 'homebridge';
 
-import { formatError, logError } from './errors.js';
+import { HubError, HubErrorCode, formatError, logError } from './errors.js';
+import { parsePositionMap, serializePositionMap } from './shadeUtils.js';
 
 const INITIAL_REQUEST_DELAY_MS = 100;
 const REQUEST_INTERVAL_MS = 100;
+const MAINTENANCE_RETRY_ATTEMPTS = 3;
+const MAINTENANCE_RETRY_DELAY_MS = 2000;
 
 export enum HubPosition {
   BOTTOM = 1,
@@ -15,12 +18,25 @@ export interface ShadePositions {
   [key: string]: number;
 }
 
+export interface ShadeFirmware {
+  revision: number;
+  subRevision: number;
+  build: number;
+  index?: number;
+}
+
 export interface PowerViewShade {
   id: number;
   name: string;
   type?: number;
   positions?: ShadePositions;
   timedOut?: boolean;
+  batteryStatus?: number;
+  batteryStrength?: number;
+  firmware?: ShadeFirmware;
+  roomId?: number;
+  groupId?: number;
+  secondaryName?: string;
 }
 
 interface QueuedRequest {
@@ -33,14 +49,32 @@ interface QueuedRequest {
   callbacks: Array<(err: Error | null, shade?: PowerViewShade) => void>;
 }
 
+export interface HubFirmware {
+  mainProcessor?: {
+    name: string;
+    build?: number;
+    revision?: number;
+    subRevision?: number;
+  };
+  radio?: {
+    build?: number;
+    revision?: number;
+    subRevision?: number;
+  };
+}
+
 export interface HubUserData {
   hubName: string;
   serialNumber: string;
-  firmware?: {
-    mainProcessor?: {
-      name: string;
-    };
-  };
+  rfStatus?: number;
+  firmware?: HubFirmware;
+}
+
+export interface HubResponse<T> {
+  ok: boolean;
+  status: number;
+  data?: T;
+  userData?: HubUserData;
 }
 
 export class PowerViewHub {
@@ -55,21 +89,134 @@ export class PowerViewHub {
     return `http://${this.host}${path}`;
   }
 
-  private async fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-    try {
-      const response = await fetch(url, init);
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status} ${response.statusText} for ${url}`);
+  private async delay(ms: number): Promise<void> {
+    await new Promise((resolve) => {
+      setTimeout(resolve, ms);
+    });
+  }
+
+  private extractUserData(body: unknown): HubUserData | undefined {
+    if (body && typeof body === 'object' && 'userData' in body) {
+      const userData = (body as { userData?: HubUserData }).userData;
+      if (userData && typeof userData.hubName === 'string') {
+        return userData;
       }
-      return await response.json() as T;
-    } catch (err) {
-      if (err instanceof Error && err.message.startsWith('HTTP ')) {
-        throw err;
-      }
-      throw new Error(
-        `Failed to reach PowerView hub at ${this.host} (${url})`,
-        { cause: err },
+    }
+    return undefined;
+  }
+
+  private hubErrorForStatus(
+    status: number,
+    url: string,
+    userData?: HubUserData,
+  ): HubError {
+    switch (status) {
+    case 400:
+      return new HubError(`Bad request for ${url}`, HubErrorCode.BadRequest, status, userData);
+    case 404:
+      return new HubError(`Not found: ${url}`, HubErrorCode.NotFound, status, userData);
+    case 423:
+      return new HubError(
+        `Hub is busy or in maintenance (${url})`,
+        HubErrorCode.Maintenance,
+        status,
+        userData,
       );
+    default:
+      return new HubError(`HTTP ${status} for ${url}`, HubErrorCode.HttpError, status, userData);
+    }
+  }
+
+  async requestJson<T>(
+    url: string,
+    init?: RequestInit,
+    options?: { retriesOnMaintenance?: boolean },
+  ): Promise<HubResponse<T>> {
+    const retries = options?.retriesOnMaintenance !== false
+      ? MAINTENANCE_RETRY_ATTEMPTS
+      : 1;
+
+    let lastError: HubError | undefined;
+
+    for (let attempt = 0; attempt < retries; ++attempt) {
+      try {
+        const response = await fetch(url, init);
+        let body: unknown;
+        const contentType = response.headers.get('content-type') ?? '';
+        if (contentType.includes('application/json')) {
+          body = await response.json();
+        }
+
+        const userData = this.extractUserData(body);
+
+        if (response.status === 423) {
+          const err = this.hubErrorForStatus(423, url, userData);
+          if (userData?.rfStatus === 1) {
+            this.log.warn('Hub RF network is busy (discovering or joining)');
+          }
+          lastError = err;
+          if (attempt < retries - 1) {
+            this.log.warn(
+              'Hub busy (HTTP 423), retrying in %dms (attempt %d/%d)',
+              MAINTENANCE_RETRY_DELAY_MS,
+              attempt + 1,
+              retries,
+            );
+            await this.delay(MAINTENANCE_RETRY_DELAY_MS);
+            continue;
+          }
+          throw err;
+        }
+
+        if (!response.ok) {
+          throw this.hubErrorForStatus(response.status, url, userData);
+        }
+
+        return {
+          ok: true,
+          status: response.status,
+          data: body as T,
+          userData,
+        };
+      } catch (err) {
+        if (err instanceof HubError) {
+          if (err.code === HubErrorCode.Maintenance && attempt < retries - 1) {
+            lastError = err;
+            await this.delay(MAINTENANCE_RETRY_DELAY_MS);
+            continue;
+          }
+          throw err;
+        }
+        throw new HubError(
+          `Failed to reach PowerView hub at ${this.host} (${url})`,
+          HubErrorCode.Unreachable,
+          undefined,
+          undefined,
+        );
+      }
+    }
+
+    throw lastError ?? new HubError(`Request failed for ${url}`, HubErrorCode.HttpError);
+  }
+
+  private async fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+    const response = await this.requestJson<T>(url, init);
+    if (!response.data) {
+      throw new HubError(`Empty response body for ${url}`, HubErrorCode.EmptyBody);
+    }
+    return response.data;
+  }
+
+  /** Returns true if the endpoint exists (HTTP 200), false if 404. */
+  async probeEndpoint(path: string): Promise<boolean> {
+    try {
+      await this.requestJson(path, undefined, { retriesOnMaintenance: false });
+      return true;
+    } catch (err) {
+      if (err instanceof HubError && err.code === HubErrorCode.NotFound) {
+        return false;
+      }
+      throw err;
     }
   }
 
@@ -133,60 +280,120 @@ export class PowerViewHub {
   async getUserData(): Promise<HubUserData> {
     const json = await this.fetchJson<{ userData?: HubUserData }>(this.baseUrl('/api/userdata'));
     if (!json.userData) {
-      throw new Error('Hub returned no userData from /api/userdata');
+      throw new HubError('Hub returned no userData from /api/userdata', HubErrorCode.EmptyBody);
     }
     return json.userData;
+  }
+
+  async getFirmwareVersion(): Promise<HubFirmware> {
+    const json = await this.fetchJson<{ firmware?: HubFirmware }>(this.baseUrl('/api/fwversion'));
+    if (!json.firmware) {
+      throw new HubError('Hub returned no firmware from /api/fwversion', HubErrorCode.EmptyBody);
+    }
+    return json.firmware;
+  }
+
+  async getScenes(): Promise<{ sceneIds: number[]; sceneData: unknown[] }> {
+    const json = await this.fetchJson<{
+      sceneIds?: number[];
+      sceneData?: unknown[];
+    }>(this.baseUrl('/api/scenes'));
+    return {
+      sceneIds: json.sceneIds ?? [],
+      sceneData: json.sceneData ?? [],
+    };
+  }
+
+  async getSceneCollections(): Promise<{
+    sceneCollectionIds: number[];
+    sceneCollectionData: unknown[];
+  }> {
+    const json = await this.fetchJson<{
+      sceneCollectionIds?: number[];
+      sceneCollectionData?: unknown[];
+    }>(this.baseUrl('/api/scenecollections'));
+    return {
+      sceneCollectionIds: json.sceneCollectionIds ?? [],
+      sceneCollectionData: json.sceneCollectionData ?? [],
+    };
   }
 
   async getShades(): Promise<PowerViewShade[]> {
     const json = await this.fetchJson<{ shadeData?: PowerViewShade[] }>(this.baseUrl('/api/shades'));
     if (!Array.isArray(json.shadeData)) {
-      throw new Error('Hub returned no shadeData from /api/shades');
+      throw new HubError('Hub returned no shadeData from /api/shades', HubErrorCode.EmptyBody);
     }
     return json.shadeData;
   }
 
-  async getShade(shadeId: number, refresh = false): Promise<PowerViewShade> {
-    if (refresh) {
-      return new Promise((resolve, reject) => {
-        for (const queued of this.queue) {
-          if (queued.shadeId === shadeId && queued.qs) {
-            queued.callbacks.push((err, shade) => {
-              if (err) {
-                reject(err);
-              } else if (shade) {
-                resolve(shade);
-              } else {
-                reject(new Error('No shade data returned'));
-              }
-            });
-            return;
-          }
-        }
+  async getShade(
+    shadeId: number,
+    options?: { refresh?: boolean; updateBatteryLevel?: boolean },
+  ): Promise<PowerViewShade> {
+    const refresh = options?.refresh === true;
+    const updateBatteryLevel = options?.updateBatteryLevel === true;
 
-        this.queueRequest({
-          shadeId,
-          qs: { refresh: 'true' },
-          callbacks: [(err, shade) => {
-            if (err) {
-              reject(err);
-            } else if (shade) {
-              resolve(shade);
-            } else {
-              reject(new Error('No shade data returned'));
-            }
-          }],
-        });
-      });
+    if (refresh && updateBatteryLevel) {
+      throw new HubError(
+        'Cannot combine refresh and updateBatteryLevel in one hub request',
+        HubErrorCode.BadRequest,
+      );
+    }
+
+    if (refresh) {
+      return this.getShadeQueued(shadeId, { refresh: 'true' });
+    }
+
+    if (updateBatteryLevel) {
+      return this.getShadeQueued(shadeId, { updateBatteryLevel: 'true' });
     }
 
     const json = await this.fetchJson<{ shade?: PowerViewShade }>(
       this.baseUrl(`/api/shades/${shadeId}`),
     );
     if (!json.shade) {
-      throw new Error(`Hub returned no shade data for shade ${shadeId}`);
+      throw new HubError(`Hub returned no shade data for shade ${shadeId}`, HubErrorCode.EmptyBody);
     }
     return json.shade;
+  }
+
+  private getShadeQueued(
+    shadeId: number,
+    qs: Record<string, string>,
+  ): Promise<PowerViewShade> {
+    return new Promise((resolve, reject) => {
+      for (const queued of this.queue) {
+        if (queued.shadeId === shadeId && queued.qs) {
+          const sameQs = Object.keys(qs).every((k) => queued.qs?.[k] === qs[k]);
+          if (sameQs) {
+            queued.callbacks.push((err, shade) => {
+              if (err) {
+                reject(err);
+              } else if (shade) {
+                resolve(shade);
+              } else {
+                reject(new HubError('No shade data returned', HubErrorCode.EmptyBody));
+              }
+            });
+            return;
+          }
+        }
+      }
+
+      this.queueRequest({
+        shadeId,
+        qs,
+        callbacks: [(err, shade) => {
+          if (err) {
+            reject(err);
+          } else if (shade) {
+            resolve(shade);
+          } else {
+            reject(new HubError('No shade data returned', HubErrorCode.EmptyBody));
+          }
+        }],
+      });
+    });
   }
 
   async putShade(
@@ -198,11 +405,7 @@ export class PowerViewHub {
     return new Promise((resolve, reject) => {
       for (const queued of this.queue) {
         if (queued.shadeId === shadeId && queued.data?.positions) {
-          const positions: Record<number, number> = {};
-          for (let i = 1; queued.data.positions[`posKind${i}`]; ++i) {
-            const kind = queued.data.positions[`posKind${i}`];
-            positions[kind] = queued.data.positions[`position${i}`];
-          }
+          const positions = parsePositionMap(queued.data.positions);
 
           positions[position] = value;
 
@@ -216,14 +419,7 @@ export class PowerViewHub {
             delete positions[HubPosition.BOTTOM];
           }
 
-          let i = 1;
-          queued.data.positions = {};
-          for (const posKind of Object.keys(positions)) {
-            const kind = parseInt(posKind, 10);
-            queued.data.positions[`posKind${i}`] = kind;
-            queued.data.positions[`position${i}`] = positions[kind];
-            ++i;
-          }
+          queued.data.positions = serializePositionMap(positions as Record<number, number>);
 
           queued.callbacks.push((err, shade) => {
             if (err) {
@@ -231,7 +427,7 @@ export class PowerViewHub {
             } else if (shade) {
               resolve(shade);
             } else {
-              reject(new Error('No shade data returned'));
+              reject(new HubError('No shade data returned', HubErrorCode.EmptyBody));
             }
           });
           return;
@@ -241,10 +437,7 @@ export class PowerViewHub {
       this.queueRequest({
         shadeId,
         data: {
-          positions: {
-            posKind1: position,
-            position1: value,
-          },
+          positions: serializePositionMap({ [position]: value }),
         },
         callbacks: [(err, shade) => {
           if (err) {
@@ -252,7 +445,7 @@ export class PowerViewHub {
           } else if (shade) {
             resolve(shade);
           } else {
-            reject(new Error('No shade data returned'));
+            reject(new HubError('No shade data returned', HubErrorCode.EmptyBody));
           }
         }],
       });
@@ -269,7 +462,7 @@ export class PowerViewHub {
             } else if (shade) {
               resolve(shade);
             } else {
-              reject(new Error('No shade data returned'));
+              reject(new HubError('No shade data returned', HubErrorCode.EmptyBody));
             }
           });
           return;
@@ -285,7 +478,7 @@ export class PowerViewHub {
           } else if (shade) {
             resolve(shade);
           } else {
-            reject(new Error('No shade data returned'));
+            reject(new HubError('No shade data returned', HubErrorCode.EmptyBody));
           }
         }],
       });

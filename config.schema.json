@@ -31,6 +31,12 @@
         "default": false,
         "description": "Periodically poll the hub for shade position updates."
       },
+      "strictErrors": {
+        "title": "Strict errors",
+        "type": "boolean",
+        "default": false,
+        "description": "When enabled, HomeKit reads fail on hub errors instead of returning the last known position."
+      },
       "forceRollerShades": {
         "title": "Force roller shade IDs",
         "type": "array",

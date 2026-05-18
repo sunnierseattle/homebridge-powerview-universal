@@ -51,6 +51,7 @@ The hub is contacted at `powerview-hub.local` by default.
 | `host` | Hub hostname or IP | `powerview-hub.local` |
 | `refreshShades` | Request fresh positions from the hub on every HomeKit read | `false` |
 | `pollShadesForUpdate` | Poll the hub every 30 seconds for position updates | `false` |
+| `strictErrors` | Fail HomeKit reads on hub errors instead of returning the last known position | `false` |
 | `forceRollerShades` | Shade IDs to treat as roller | `[]` |
 | `forceTopBottomShades` | Shade IDs to treat as top/bottom | `[]` |
 | `forceHorizontalShades` | Shade IDs to treat as horizontal vane | `[]` |
@@ -76,6 +77,14 @@ Shade 12345 has unknown type 66, assuming roller
 ```
 
 Please [open an issue](https://github.com/squircle12/homebridge-powerview-3/issues) with the shade model. You can override detection with the `force*` arrays above.
+
+### Hub resilience and optional features
+
+- If the hub is busy (HTTP 423, maintenance), shade requests are retried automatically.
+- When a position refresh times out or the hub is unreachable, HomeKit reads return the **last known position** unless `strictErrors` is enabled.
+- **Battery** and **per-shade firmware** are shown in Accessory Information when the hub provides them; battery levels are refreshed about every 6 hours.
+- **Jog** (short nudge) is triggered from **Hold** on the shade control where supported, and when you **Identify** the accessory in the Home app while pairing.
+- PowerView **scenes** and **multi-room scene collections** are probed at startup for future use but are **not** exposed as HomeKit accessories yet.
 
 ## Migrating from homebridge-powerview-2
 
@@ -106,6 +115,7 @@ Two controls are created per shade (bottom and top), which can be used independe
 npm install
 npm run build
 npm run lint
+npm test
 ```
 
 ## License

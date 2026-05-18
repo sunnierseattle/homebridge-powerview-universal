@@ -2,6 +2,25 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.1.0] - 2026-05-18
+
+### Added
+
+- Structured hub HTTP handling with retry on HTTP 423 (hub busy / maintenance)
+- Startup capability probe for `/api/fwversion`, `/api/scenes`, and `/api/scenecollections` (logged; scenes not exposed in HomeKit yet)
+- Position cache: refresh timeouts and transient read failures return last known values (unless `strictErrors` is enabled)
+- `strictErrors` platform option for fail-fast HomeKit reads (debugging)
+- Per-shade `FirmwareRevision` and `StatusLowBattery` in Accessory Information when the hub reports them
+- Periodic battery refresh via `updateBatteryLevel` (every 6 hours)
+- Top/bottom shade top-rail display name from hub `secondaryName`
+- **Hold** (Hold Position) and **Identify** wired to hub jog motion where supported
+- Vitest unit tests for HTTP classification, position parsing, and battery helpers
+
+### Changed
+
+- `putShade` queue merge skips invalid position kind 4 (hub position error) from PUT bodies
+- Shade list failures during poll no longer remove existing accessories
+
 ## [3.0.0] - 2026-05-17
 
 ### Added
