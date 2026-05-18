@@ -11,7 +11,7 @@ import {
   POSITION_KIND_ERROR,
   decodeBase64Name,
   formatShadeFirmware,
-  isLowBattery,
+  resolveBatteryReading,
 } from './shadeUtils.js';
 import { ShadeKind, SUBTYPE, type ShadeContext } from './settings.js';
 
@@ -264,6 +264,51 @@ export class PowerViewPlatformAccessory {
     }
   }
 
+  /**
+   * HomeKit shows battery % via a linked {@link Service.Battery} service (not on Window Covering).
+   * AccessoryInformation.StatusLowBattery alone only drives the low-battery warning state.
+   */
+  private updateBatteryService(shade: PowerViewShade | undefined): void {
+    const reading = shade
+      ? resolveBatteryReading(shade.batteryStatus, shade.batteryStrength)
+      : undefined;
+
+    const existing = this.accessory.getService(this.Service.Battery);
+    if (!reading) {
+      if (existing) {
+        this.accessory.removeService(existing);
+      }
+      return;
+    }
+
+    const batteryService = existing
+      ?? this.accessory.addService(this.Service.Battery, `${this.accessory.displayName} Battery`);
+
+    batteryService
+      .updateCharacteristic(this.Characteristic.BatteryLevel, reading.level)
+      .updateCharacteristic(
+        this.Characteristic.StatusLowBattery,
+        reading.low
+          ? this.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW
+          : this.Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL,
+      );
+
+    const chargingState = reading.mainsPowered
+      ? this.Characteristic.ChargingState.NOT_CHARGEABLE
+      : this.Characteristic.ChargingState.NOT_CHARGING;
+    batteryService.updateCharacteristic(this.Characteristic.ChargingState, chargingState);
+
+    const primary = this.resolveWindowCoveringService(SUBTYPE.BOTTOM)
+      ?? this.accessory.getService(this.Service.WindowCovering);
+    if (primary && typeof primary.addLinkedService === 'function') {
+      try {
+        primary.addLinkedService(batteryService);
+      } catch {
+        // Already linked or platform does not support linking.
+      }
+    }
+  }
+
   updateAccessoryInformation(shade?: PowerViewShade): void {
     const shadeData = shade ?? this.lastShade;
     let info = this.accessory.getService(this.Service.AccessoryInformation);
@@ -283,11 +328,19 @@ export class PowerViewPlatformAccessory {
       info.setCharacteristic(this.Characteristic.FirmwareRevision, firmwareRevision);
     }
 
-    if (shadeData && isLowBattery(shadeData.batteryStatus, shadeData.batteryStrength)) {
-      info.setCharacteristic(this.Characteristic.StatusLowBattery, 1);
-    } else if (shadeData && (shadeData.batteryStatus != null || shadeData.batteryStrength != null)) {
-      info.setCharacteristic(this.Characteristic.StatusLowBattery, 0);
+    const reading = shadeData
+      ? resolveBatteryReading(shadeData.batteryStatus, shadeData.batteryStrength)
+      : undefined;
+    if (reading) {
+      info.setCharacteristic(
+        this.Characteristic.StatusLowBattery,
+        reading.low
+          ? this.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW
+          : this.Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL,
+      );
     }
+
+    this.updateBatteryService(shadeData);
   }
 
   updateShadeValues(shade: PowerViewShade, current = false): PositionMap {

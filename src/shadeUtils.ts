@@ -64,6 +64,63 @@ export function isLowBattery(batteryStatus?: number, batteryStrength?: number): 
   return false;
 }
 
+export interface BatteryReading {
+  /** HomeKit BatteryLevel (0–100). */
+  level: number;
+  low: boolean;
+  /** Hub reports mains-powered (BatteryStatus plugged in). */
+  mainsPowered: boolean;
+}
+
+/**
+ * Maps PowerView shade battery fields to HomeKit Battery service values.
+ * Returns undefined when the hub provides no usable battery data.
+ */
+export function resolveBatteryReading(
+  batteryStatus?: number,
+  batteryStrength?: number,
+): BatteryReading | undefined {
+  if (batteryStatus == null && batteryStrength == null) {
+    return undefined;
+  }
+
+  if (batteryStatus === 0) {
+    return undefined;
+  }
+
+  let level: number | undefined;
+  if (typeof batteryStrength === 'number' && batteryStrength >= 0 && batteryStrength <= 100) {
+    level = Math.round(batteryStrength);
+  } else if (batteryStatus != null) {
+    switch (batteryStatus) {
+    case 1:
+      level = 15;
+      break;
+    case 2:
+      level = 50;
+      break;
+    case 3:
+      level = 90;
+      break;
+    case 4:
+      level = 100;
+      break;
+    default:
+      return undefined;
+    }
+  }
+
+  if (level == null) {
+    return undefined;
+  }
+
+  return {
+    level,
+    low: isLowBattery(batteryStatus, batteryStrength),
+    mainsPowered: batteryStatus === 4,
+  };
+}
+
 export function formatShadeFirmware(firmware?: {
   revision: number;
   subRevision: number;

@@ -7,6 +7,7 @@ import {
   formatShadeFirmware,
   isLowBattery,
   parsePositionMap,
+  resolveBatteryReading,
   serializePositionMap,
 } from './shadeUtils.js';
 
@@ -62,5 +63,25 @@ describe('isLowBattery', () => {
 describe('formatShadeFirmware', () => {
   it('formats revision.subRevision.build', () => {
     expect(formatShadeFirmware({ revision: 2, subRevision: 0, build: 564 })).toBe('2.0.564');
+  });
+});
+
+describe('resolveBatteryReading', () => {
+  it('prefers batteryStrength for HomeKit percentage', () => {
+    expect(resolveBatteryReading(3, 78)).toEqual({
+      level: 78,
+      low: false,
+      mainsPowered: false,
+    });
+  });
+
+  it('maps status-only hubs to approximate levels', () => {
+    expect(resolveBatteryReading(1, undefined)?.level).toBe(15);
+    expect(resolveBatteryReading(1, undefined)?.low).toBe(true);
+  });
+
+  it('returns undefined when status is unavailable', () => {
+    expect(resolveBatteryReading(0, 50)).toBeUndefined();
+    expect(resolveBatteryReading(undefined, undefined)).toBeUndefined();
   });
 });

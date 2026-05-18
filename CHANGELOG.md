@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.1.1] - 2026-05-18
+
+### Added
+
+- Linked HomeKit **Battery** service per shade with `BatteryLevel` (0–100%) so battery appears in the Home app, not only the low-battery flag on Accessory Information
+
 ## [3.1.0] - 2026-05-18
 
 ### Added

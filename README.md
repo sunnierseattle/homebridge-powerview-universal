@@ -82,7 +82,7 @@ Please [open an issue](https://github.com/squircle12/homebridge-powerview-3/issu
 
 - If the hub is busy (HTTP 423, maintenance), shade requests are retried automatically.
 - When a position refresh times out or the hub is unreachable, HomeKit reads return the **last known position** unless `strictErrors` is enabled.
-- **Battery** and **per-shade firmware** are shown in Accessory Information when the hub provides them; battery levels are refreshed about every 6 hours.
+- **Battery** percentage appears in the Home app (via a linked HomeKit Battery service on each shade) when the hub reports `batteryStrength` or `batteryStatus`; levels are refreshed about every 6 hours. Window Covering does not expose battery directly—only the standard Battery service does.
 - **Jog** (short nudge) is triggered from **Hold** on the shade control where supported, and when you **Identify** the accessory in the Home app while pairing.
 - PowerView **scenes** and **multi-room scene collections** are probed at startup for future use but are **not** exposed as HomeKit accessories yet.
 
