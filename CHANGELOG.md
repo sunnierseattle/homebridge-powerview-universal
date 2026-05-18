@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.1.2] - 2026-05-18
+
+### Added
+
+- [RELEASE_NOTES.md](RELEASE_NOTES.md) for publish/GitHub release copy (see Latest section when tagging)
+
 ## [3.1.1] - 2026-05-18
 
 ### Added

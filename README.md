@@ -109,6 +109,10 @@ Use **Details** after a long-press to adjust tilt. For scenes: use **Closed** wh
 
 Two controls are created per shade (bottom and top), which can be used independently or in scenes.
 
+## Releases
+
+Version history for installers is in [RELEASE_NOTES.md](RELEASE_NOTES.md). Detailed developer notes are in [CHANGELOG.md](CHANGELOG.md).
+
 ## Development
 
 ```bash
