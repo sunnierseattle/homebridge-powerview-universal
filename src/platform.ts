@@ -153,7 +153,7 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
 
       if (!shadeAccessory.context.shadeType) {
         const topService = shadeAccessory.getServiceById(
-          this.Service.WindowCovering.UUID,
+          this.Service.WindowCovering,
           SUBTYPE.TOP,
         );
         shadeAccessory.context.shadeType = topService ? ShadeKind.TOP_BOTTOM : ShadeKind.ROLLER;
@@ -177,7 +177,7 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
       const handler = new PowerViewPlatformAccessory(this, accessory, this.log);
       this.handlers.set(shadeId, handler);
     } catch (err) {
-      delete this.accessories[shadeId];
+      this.handlers.delete(shadeId);
       logError(this.log, `Failed to register shade handler for ${shadeId}:`, err);
     }
   }
@@ -236,6 +236,10 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
           newShades[shade.id] = this.addShadeAccessory(shade);
         } else {
           newShades[shade.id] = this.updateShadeAccessory(shade);
+        }
+
+        if (!this.handlers.has(shade.id)) {
+          this.registerHandler(newShades[shade.id]);
         }
 
         const handler = this.handlers.get(shade.id);

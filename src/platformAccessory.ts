@@ -42,23 +42,46 @@ export class PowerViewPlatformAccessory {
   }
 
   private windowCoveringService(subtype: string): Service | undefined {
-    return this.accessory.getServiceById(
-      this.Service.WindowCovering.UUID,
+    return this.accessory.getServiceById(this.Service.WindowCovering, subtype);
+  }
+
+  /**
+   * Returns an existing Window Covering service or creates one. Uses the Service
+   * constructor (not UUID string) for lookup per HAP-NodeJS getServiceById API.
+   */
+  private ensureWindowCoveringService(subtype: string): Service {
+    const existing = this.windowCoveringService(subtype);
+    if (existing) {
+      return existing;
+    }
+
+    // Cached accessories from older plugin versions may have no subtype on a single service.
+    if (subtype === SUBTYPE.BOTTOM) {
+      const legacy = this.accessory.getService(this.Service.WindowCovering);
+      if (legacy) {
+        return legacy;
+      }
+    }
+
+    return this.accessory.addService(
+      this.Service.WindowCovering,
+      this.accessory.displayName,
       subtype,
+    );
+  }
+
+  private setCoveringStopped(service: Service): void {
+    service.updateCharacteristic(
+      this.Characteristic.PositionState,
+      this.Characteristic.PositionState.STOPPED,
     );
   }
 
   configure(): void {
     const shadeId = this.shadeId;
 
-    let service = this.windowCoveringService(SUBTYPE.BOTTOM);
-    if (!service) {
-      service = this.accessory.addService(
-        this.Service.WindowCovering,
-        this.accessory.displayName,
-        SUBTYPE.BOTTOM,
-      );
-    }
+    const service = this.ensureWindowCoveringService(SUBTYPE.BOTTOM);
+    this.setCoveringStopped(service);
 
     service
       .getCharacteristic(this.Characteristic.CurrentPosition)
@@ -115,12 +138,9 @@ export class PowerViewPlatformAccessory {
     let topService = this.windowCoveringService(SUBTYPE.TOP);
     if (this.shadeType === ShadeKind.TOP_BOTTOM) {
       if (!topService) {
-        topService = this.accessory.addService(
-          this.Service.WindowCovering,
-          this.accessory.displayName,
-          SUBTYPE.TOP,
-        );
+        topService = this.ensureWindowCoveringService(SUBTYPE.TOP);
       }
+      this.setCoveringStopped(topService);
 
       topService
         .getCharacteristic(this.Characteristic.CurrentPosition)
