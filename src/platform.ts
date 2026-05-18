@@ -151,6 +151,8 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
 
       this.log.info('Cached shade %d: %s', shadeId, shadeAccessory.displayName);
 
+      this.ensureWindowCoveringCategory(shadeAccessory);
+
       if (!shadeAccessory.context.shadeType) {
         const topService = shadeAccessory.getServiceById(
           this.Service.WindowCovering,
@@ -166,6 +168,14 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
         `Failed to configure cached accessory "${accessory.displayName}":`,
         err,
       );
+    }
+  }
+
+  private ensureWindowCoveringCategory(accessory: PlatformAccessory<ShadeContext>): void {
+    const category = this.api.hap.Categories.WINDOW_COVERING;
+    if (accessory.category !== category) {
+      accessory.category = category;
+      this.api.updatePlatformAccessories([accessory]);
     }
   }
 
@@ -187,7 +197,11 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
     this.log.info('Adding shade %d: %s', shade.id, name);
 
     const uuid = this.api.hap.uuid.generate(shade.id.toString());
-    const accessory = new this.api.platformAccessory<ShadeContext>(name, uuid);
+    const accessory = new this.api.platformAccessory<ShadeContext>(
+      name,
+      uuid,
+      this.api.hap.Categories.WINDOW_COVERING,
+    );
     accessory.context.shadeId = shade.id;
     accessory.context.shadeType = this.shadeType(shade);
 
@@ -243,7 +257,10 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
         }
 
         const handler = this.handlers.get(shade.id);
-        handler?.updateShadeValues(shade);
+        if (handler) {
+          const shadeState = await this.hub.getShade(shade.id);
+          handler.updateShadeValues(shadeState);
+        }
       } catch (err) {
         logError(this.log, `Failed to process shade ${shade.id}:`, err);
       }

@@ -41,26 +41,30 @@ export class PowerViewPlatformAccessory {
     this.accessory.context.shadeType = type;
   }
 
-  private windowCoveringService(subtype: string): Service | undefined {
-    return this.accessory.getServiceById(this.Service.WindowCovering, subtype);
-  }
-
   /**
-   * Returns an existing Window Covering service or creates one. Uses the Service
-   * constructor (not UUID string) for lookup per HAP-NodeJS getServiceById API.
+   * Finds a Window Covering service by subtype, including cached accessories that
+   * predate subtypes (empty subtype on a single covering service).
    */
-  private ensureWindowCoveringService(subtype: string): Service {
-    const existing = this.windowCoveringService(subtype);
-    if (existing) {
-      return existing;
+  private resolveWindowCoveringService(subtype: string): Service | undefined {
+    const match = this.accessory.getServiceById(this.Service.WindowCovering, subtype);
+    if (match) {
+      return match;
     }
 
-    // Cached accessories from older plugin versions may have no subtype on a single service.
     if (subtype === SUBTYPE.BOTTOM) {
       const legacy = this.accessory.getService(this.Service.WindowCovering);
-      if (legacy) {
+      if (legacy && legacy.subtype !== SUBTYPE.TOP) {
         return legacy;
       }
+    }
+
+    return undefined;
+  }
+
+  private ensureWindowCoveringService(subtype: string): Service {
+    const existing = this.resolveWindowCoveringService(subtype);
+    if (existing) {
+      return existing;
     }
 
     return this.accessory.addService(
@@ -70,8 +74,25 @@ export class PowerViewPlatformAccessory {
     );
   }
 
-  private setCoveringStopped(service: Service): void {
-    service.updateCharacteristic(
+  private wireTargetPositionGet(service: Service): void {
+    service
+      .getCharacteristic(this.Characteristic.TargetPosition)
+      .removeAllListeners('get')
+      .on('get', (callback) => {
+        const current = service.getCharacteristic(this.Characteristic.CurrentPosition).value;
+        callback(null, typeof current === 'number' ? current : 0);
+      });
+  }
+
+  /** Keeps current/target in sync and reports stopped so HomeKit/Homebridge do not show movement. */
+  private applyCoveringPosition(service: Service, value: number): void {
+    if (Number.isNaN(value)) {
+      return;
+    }
+
+    service.setCharacteristic(this.Characteristic.CurrentPosition, value);
+    service.updateCharacteristic(this.Characteristic.TargetPosition, value);
+    service.setCharacteristic(
       this.Characteristic.PositionState,
       this.Characteristic.PositionState.STOPPED,
     );
@@ -81,7 +102,7 @@ export class PowerViewPlatformAccessory {
     const shadeId = this.shadeId;
 
     const service = this.ensureWindowCoveringService(SUBTYPE.BOTTOM);
-    this.setCoveringStopped(service);
+    this.applyCoveringPosition(service, 0);
 
     service
       .getCharacteristic(this.Characteristic.CurrentPosition)
@@ -89,6 +110,8 @@ export class PowerViewPlatformAccessory {
       .on('get', (callback) => {
         void this.platform.getPosition(shadeId, HubPosition.BOTTOM, callback);
       });
+
+    this.wireTargetPositionGet(service);
 
     service
       .getCharacteristic(this.Characteristic.TargetPosition)
@@ -135,12 +158,12 @@ export class PowerViewPlatformAccessory {
       this.resetOptionalTiltCharacteristics(service, 'vertical');
     }
 
-    let topService = this.windowCoveringService(SUBTYPE.TOP);
+    let topService = this.resolveWindowCoveringService(SUBTYPE.TOP);
     if (this.shadeType === ShadeKind.TOP_BOTTOM) {
       if (!topService) {
         topService = this.ensureWindowCoveringService(SUBTYPE.TOP);
       }
-      this.setCoveringStopped(topService);
+      this.applyCoveringPosition(topService, 0);
 
       topService
         .getCharacteristic(this.Characteristic.CurrentPosition)
@@ -148,6 +171,8 @@ export class PowerViewPlatformAccessory {
         .on('get', (callback) => {
           void this.platform.getPosition(shadeId, HubPosition.TOP, callback);
         });
+
+      this.wireTargetPositionGet(topService);
 
       topService
         .getCharacteristic(this.Characteristic.TargetPosition)
@@ -195,7 +220,8 @@ export class PowerViewPlatformAccessory {
       .setCharacteristic(
         this.Characteristic.Model,
         this.platform.hubVersion ?? 'PowerView',
-      );
+      )
+      .setCharacteristic(this.Characteristic.SerialNumber, String(this.shadeId));
   }
 
   updateShadeValues(shade: PowerViewShade, current = false): PositionMap {
@@ -213,34 +239,20 @@ export class PowerViewPlatformAccessory {
 
       if (position === HubPosition.BOTTOM) {
         positions[HubPosition.BOTTOM] = Math.round(100 * hubValue / 65535);
-        const service = this.windowCoveringService(SUBTYPE.BOTTOM);
+        const service = this.resolveWindowCoveringService(SUBTYPE.BOTTOM);
         if (!service) {
+          this.log.warn('No bottom Window Covering service for shade %d', shade.id);
           continue;
         }
 
-        if (current) {
-          this.log.info('Setting CurrentPosition to:', positions[HubPosition.BOTTOM]);
-          if (!Number.isNaN(positions[HubPosition.BOTTOM])) {
-            service.setCharacteristic(
-              this.Characteristic.CurrentPosition,
-              positions[HubPosition.BOTTOM]!,
-            );
-          } else {
-            this.log.warn('Invalid position value:', positions[HubPosition.BOTTOM]);
-          }
-        }
-
         if (!Number.isNaN(positions[HubPosition.BOTTOM])) {
-          service.updateCharacteristic(
-            this.Characteristic.TargetPosition,
-            positions[HubPosition.BOTTOM]!,
-          );
+          if (current) {
+            this.log.info('Setting position to:', positions[HubPosition.BOTTOM]);
+          }
+          this.applyCoveringPosition(service, positions[HubPosition.BOTTOM]!);
+        } else {
+          this.log.warn('Invalid position value:', positions[HubPosition.BOTTOM]);
         }
-
-        service.setCharacteristic(
-          this.Characteristic.PositionState,
-          this.Characteristic.PositionState.STOPPED,
-        );
 
         if (this.shadeType === ShadeKind.HORIZONTAL && current) {
           service.setCharacteristic(this.Characteristic.CurrentHorizontalTiltAngle, 0);
@@ -255,19 +267,12 @@ export class PowerViewPlatformAccessory {
 
       if (position === HubPosition.VANES && this.shadeType === ShadeKind.HORIZONTAL) {
         positions[HubPosition.VANES] = Math.round(90 * hubValue / 32767);
-        const service = this.windowCoveringService(SUBTYPE.BOTTOM);
+        const service = this.resolveWindowCoveringService(SUBTYPE.BOTTOM);
         if (!service) {
           continue;
         }
 
-        if (current) {
-          service.setCharacteristic(this.Characteristic.CurrentPosition, 0);
-        }
-        service.updateCharacteristic(this.Characteristic.TargetPosition, 0);
-        service.setCharacteristic(
-          this.Characteristic.PositionState,
-          this.Characteristic.PositionState.STOPPED,
-        );
+        this.applyCoveringPosition(service, 0);
 
         if (current && !Number.isNaN(positions[HubPosition.VANES])) {
           service.setCharacteristic(
@@ -285,19 +290,12 @@ export class PowerViewPlatformAccessory {
 
       if (position === HubPosition.VANES && this.shadeType === ShadeKind.VERTICAL) {
         positions[HubPosition.VANES] = 90 - Math.round(180 * hubValue / 65535);
-        const service = this.windowCoveringService(SUBTYPE.BOTTOM);
+        const service = this.resolveWindowCoveringService(SUBTYPE.BOTTOM);
         if (!service) {
           continue;
         }
 
-        if (current) {
-          service.setCharacteristic(this.Characteristic.CurrentPosition, 0);
-        }
-        service.updateCharacteristic(this.Characteristic.TargetPosition, 0);
-        service.setCharacteristic(
-          this.Characteristic.PositionState,
-          this.Characteristic.PositionState.STOPPED,
-        );
+        this.applyCoveringPosition(service, 0);
 
         if (current) {
           service.setCharacteristic(
@@ -313,25 +311,14 @@ export class PowerViewPlatformAccessory {
 
       if (position === HubPosition.TOP && this.shadeType === ShadeKind.TOP_BOTTOM) {
         positions[HubPosition.TOP] = Math.round(100 * hubValue / 65535);
-        const service = this.windowCoveringService(SUBTYPE.TOP);
+        const service = this.resolveWindowCoveringService(SUBTYPE.TOP);
         if (!service) {
           continue;
         }
 
-        if (current) {
-          service.setCharacteristic(
-            this.Characteristic.CurrentPosition,
-            positions[HubPosition.TOP]!,
-          );
+        if (!Number.isNaN(positions[HubPosition.TOP])) {
+          this.applyCoveringPosition(service, positions[HubPosition.TOP]!);
         }
-        service.updateCharacteristic(
-          this.Characteristic.TargetPosition,
-          positions[HubPosition.TOP]!,
-        );
-        service.setCharacteristic(
-          this.Characteristic.PositionState,
-          this.Characteristic.PositionState.STOPPED,
-        );
       }
     }
 
