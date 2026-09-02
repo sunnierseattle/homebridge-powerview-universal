@@ -128,3 +128,42 @@ describe('PowerViewHub queue', () => {
     await secondAssertion;
   });
 });
+
+describe('PowerViewHub serialisation', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('never has two requests in flight against the hub at once', async () => {
+    vi.useFakeTimers();
+    let inFlight = 0;
+    let maxInFlight = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      inFlight -= 1;
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        json: async () => ({ firmware: { mainProcessor: { name: 'PowerView Hub' } } }),
+      };
+    }));
+
+    const h = hub();
+    // Capability probes bypass the shade queue; upstream fired these in parallel
+    // with shade reads, which made the hub time out and return truncated JSON.
+    const all = Promise.all([
+      h.getFirmwareVersion(),
+      h.getUserData().catch(() => undefined),
+      h.getScenes().catch(() => undefined),
+      h.getSceneCollections().catch(() => undefined),
+    ]);
+    await vi.runAllTimersAsync();
+    await all;
+
+    expect(maxInFlight).toBe(1);
+  });
+});

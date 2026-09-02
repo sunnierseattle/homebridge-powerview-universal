@@ -86,6 +86,15 @@ export interface HubResponse<T> {
 export class PowerViewHub {
   private readonly queue: QueuedRequest[] = [];
 
+  /**
+   * Serialises every HTTP call to the hub. Legacy PowerView hubs are small
+   * embedded devices that answer one request at a time; concurrent calls make
+   * them time out or return truncated JSON mid-response. The shade queue only
+   * ordered shade requests — capability probes and /api/shades listings called
+   * fetchJson directly and raced against it.
+   */
+  private chain: Promise<unknown> = Promise.resolve();
+
   constructor(
     private readonly log: Logging,
     private readonly host: string,
@@ -93,6 +102,22 @@ export class PowerViewHub {
 
   private baseUrl(path: string): string {
     return `http://${this.host}${path}`;
+  }
+
+  /** Runs `fn` after all previously serialised work, spaced by REQUEST_INTERVAL_MS. */
+  private serialize<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.chain.then(async () => {
+      try {
+        return await fn();
+      } finally {
+        await this.delay(REQUEST_INTERVAL_MS);
+      }
+    });
+    this.chain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   private async delay(ms: number): Promise<void> {
@@ -146,11 +171,15 @@ export class PowerViewHub {
 
     for (let attempt = 0; attempt < retries; ++attempt) {
       const controller = new AbortController();
-      const timer = setTimeout(() => {
-        controller.abort();
-      }, REQUEST_TIMEOUT_MS);
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        const response = await fetch(url, { ...init, signal: controller.signal });
+        const response = await this.serialize(async () => {
+          // Start the timeout when the request actually begins, not while queued.
+          timer = setTimeout(() => {
+            controller.abort();
+          }, REQUEST_TIMEOUT_MS);
+          return fetch(url, { ...init, signal: controller.signal });
+        });
         let body: unknown;
         const contentType = response.headers.get('content-type') ?? '';
         if (contentType.includes('application/json')) {
@@ -215,7 +244,9 @@ export class PowerViewHub {
           { cause: err },
         );
       } finally {
-        clearTimeout(timer);
+        if (timer !== undefined) {
+          clearTimeout(timer);
+        }
       }
     }
 
@@ -297,7 +328,7 @@ export class PowerViewHub {
       // HomeKit request hangs unresolved until Homebridge restarts.
       this.queue.shift();
       if (this.queue.length > 0) {
-        this.scheduleRequest(REQUEST_INTERVAL_MS);
+        this.scheduleRequest(0);
       }
     }
   }

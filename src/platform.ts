@@ -65,6 +65,9 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
   private readonly forceVerticalShades: number[];
 
   private readonly lastPositions = new Map<number, PositionMap>();
+
+  /** Shades with a background refresh already in flight, so reads don't pile up. */
+  private readonly pendingRefresh = new Set<number>();
   private readonly batteryRefreshDisabled = new Set<number>();
   private readonly posKindErrorLogged = new Set<number>();
   private batteryPollTimer?: ReturnType<typeof setInterval>;
@@ -399,14 +402,24 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
     position: HubPosition,
     callback: CharacteristicCallback,
   ): Promise<void> {
-    this.log.info('getPosition %d/%d', shadeId, position);
+    this.log.debug('getPosition %d/%d', shadeId, position);
 
     try {
       const value = await this.updatePosition(shadeId, position, this.refreshShades);
       if (!this.refreshShades && value == null) {
-        this.log.info('refresh %d/%d', shadeId, position);
-        const refreshed = await this.updatePosition(shadeId, position, true);
-        callback(null, this.resolvePositionValue(shadeId, position, refreshed));
+        if (this.strictErrors) {
+          // Strict mode opts into surfacing hub failures, so keep the blocking refresh.
+          this.log.debug('refresh %d/%d', shadeId, position);
+          const refreshed = await this.updatePosition(shadeId, position, true);
+          callback(null, this.resolvePositionValue(shadeId, position, refreshed));
+          return;
+        }
+        // Answer HomeKit now from cache. A blocking refresh wakes the motor over RF
+        // and routinely exceeds HomeKit's read budget, which logged "read handler
+        // didn't respond at all" and stalled the accessory. updateShade() pushes the
+        // real value via updateCharacteristic as soon as the hub answers.
+        this.scheduleBackgroundRefresh(shadeId, position);
+        callback(null, this.resolvePositionValue(shadeId, position, null));
       } else {
         callback(null, this.resolvePositionValue(shadeId, position, value));
       }
@@ -419,6 +432,24 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
       logError(this.log, `getPosition failed for shade ${shadeId}/${position}, using cache:`, err);
       callback(null, this.resolvePositionValue(shadeId, position, null));
     }
+  }
+
+  /** Refreshes a shade off the HomeKit read path, deduped per shade. */
+  private scheduleBackgroundRefresh(shadeId: number, position: HubPosition): void {
+    if (this.pendingRefresh.has(shadeId)) {
+      return;
+    }
+    this.pendingRefresh.add(shadeId);
+    void (async () => {
+      try {
+        this.log.debug('background refresh %d/%d', shadeId, position);
+        await this.updatePosition(shadeId, position, true);
+      } catch (err) {
+        logError(this.log, `Background refresh failed for shade ${shadeId}:`, err);
+      } finally {
+        this.pendingRefresh.delete(shadeId);
+      }
+    })();
   }
 
   private resolvePositionValue(
@@ -458,7 +489,7 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
 
     const value = positions[position];
     if (typeof value === 'number' && Number.isFinite(value)) {
-      this.log.info('updatePosition %d/%d: %d', shadeId, position, value);
+      this.log.debug('updatePosition %d/%d: %d', shadeId, position, value);
       return value;
     }
 
