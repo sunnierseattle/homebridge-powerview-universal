@@ -7,6 +7,12 @@ const INITIAL_REQUEST_DELAY_MS = 100;
 const REQUEST_INTERVAL_MS = 100;
 const MAINTENANCE_RETRY_ATTEMPTS = 3;
 const MAINTENANCE_RETRY_DELAY_MS = 2000;
+/**
+ * Hard ceiling on any single hub request. Node's fetch has no default timeout, and
+ * the hub serialises every call through one queue — a half-open socket would stall
+ * every subsequent request forever.
+ */
+const REQUEST_TIMEOUT_MS = 15000;
 
 export enum HubPosition {
   BOTTOM = 1,
@@ -139,8 +145,12 @@ export class PowerViewHub {
     let lastError: HubError | undefined;
 
     for (let attempt = 0; attempt < retries; ++attempt) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => {
+        controller.abort();
+      }, REQUEST_TIMEOUT_MS);
       try {
-        const response = await fetch(url, init);
+        const response = await fetch(url, { ...init, signal: controller.signal });
         let body: unknown;
         const contentType = response.headers.get('content-type') ?? '';
         if (contentType.includes('application/json')) {
@@ -187,12 +197,25 @@ export class PowerViewHub {
           }
           throw err;
         }
+        if (controller.signal.aborted) {
+          throw new HubError(
+            `Timed out after ${REQUEST_TIMEOUT_MS}ms waiting for PowerView hub at ${this.host} (${url})`,
+            HubErrorCode.Timeout,
+            undefined,
+            undefined,
+            { cause: err },
+          );
+        }
+        const detail = err instanceof Error ? err.message : String(err);
         throw new HubError(
-          `Failed to reach PowerView hub at ${this.host} (${url})`,
+          `Failed to reach PowerView hub at ${this.host} (${url}): ${detail}`,
           HubErrorCode.Unreachable,
           undefined,
           undefined,
+          { cause: err },
         );
+      } finally {
+        clearTimeout(timer);
       }
     }
 
@@ -210,7 +233,7 @@ export class PowerViewHub {
   /** Returns true if the endpoint exists (HTTP 200), false if 404. */
   async probeEndpoint(path: string): Promise<boolean> {
     try {
-      await this.requestJson(path, undefined, { retriesOnMaintenance: false });
+      await this.requestJson(this.baseUrl(path), undefined, { retriesOnMaintenance: false });
       return true;
     } catch (err) {
       if (err instanceof HubError && err.code === HubErrorCode.NotFound) {
@@ -241,24 +264,24 @@ export class PowerViewHub {
       return;
     }
 
-    const url = new URL(this.baseUrl(`/api/shades/${queued.shadeId}`));
-    if (queued.qs) {
-      for (const [key, value] of Object.entries(queued.qs)) {
-        url.searchParams.set(key, value);
-      }
-    }
-
-    let init: RequestInit | undefined;
-    if (queued.data) {
-      init = {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shade: queued.data }),
-      };
-      this.log.info('Put for', queued.shadeId, queued.data);
-    }
-
     try {
+      const url = new URL(this.baseUrl(`/api/shades/${queued.shadeId}`));
+      if (queued.qs) {
+        for (const [key, value] of Object.entries(queued.qs)) {
+          url.searchParams.set(key, value);
+        }
+      }
+
+      let init: RequestInit | undefined;
+      if (queued.data) {
+        init = {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ shade: queued.data }),
+        };
+        this.log.debug('Put for %d %s', queued.shadeId, JSON.stringify(queued.data));
+      }
+
       const json = await this.fetchJson<{ shade: PowerViewShade }>(url.toString(), init);
       for (const callback of queued.callbacks) {
         callback(null, json.shade);
@@ -269,11 +292,13 @@ export class PowerViewHub {
       for (const callback of queued.callbacks) {
         callback(error);
       }
-    }
-
-    this.queue.shift();
-    if (this.queue.length > 0) {
-      this.scheduleRequest(REQUEST_INTERVAL_MS);
+    } finally {
+      // Must always advance, or one failure wedges the queue and every pending
+      // HomeKit request hangs unresolved until Homebridge restarts.
+      this.queue.shift();
+      if (this.queue.length > 0) {
+        this.scheduleRequest(REQUEST_INTERVAL_MS);
+      }
     }
   }
 

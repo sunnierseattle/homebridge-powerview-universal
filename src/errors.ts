@@ -4,6 +4,7 @@ import type { HubUserData } from './powerviewHub.js';
 
 export enum HubErrorCode {
   Unreachable = 'Unreachable',
+  Timeout = 'Timeout',
   HttpError = 'HttpError',
   Maintenance = 'Maintenance',
   NotFound = 'NotFound',
@@ -19,8 +20,9 @@ export class HubError extends Error {
     public readonly code: HubErrorCode,
     public readonly status?: number,
     public readonly userData?: HubUserData,
+    options?: { cause?: unknown },
   ) {
-    super(message);
+    super(message, options);
   }
 }
 

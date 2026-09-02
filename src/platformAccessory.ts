@@ -328,18 +328,9 @@ export class PowerViewPlatformAccessory {
       info.setCharacteristic(this.Characteristic.FirmwareRevision, firmwareRevision);
     }
 
-    const reading = shadeData
-      ? resolveBatteryReading(shadeData.batteryStatus, shadeData.batteryStrength)
-      : undefined;
-    if (reading) {
-      info.setCharacteristic(
-        this.Characteristic.StatusLowBattery,
-        reading.low
-          ? this.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW
-          : this.Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL,
-      );
-    }
-
+    // StatusLowBattery is not a valid characteristic on AccessoryInformation; setting
+    // it here made Homebridge log a warning for every shade on every refresh. The
+    // Battery service (below) is the correct and only place for it.
     this.updateBatteryService(shadeData);
   }
 

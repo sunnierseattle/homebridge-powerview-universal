@@ -23,6 +23,25 @@ export function generationHintFromHubName(name: string | undefined): HubCapabili
   return 'unknown';
 }
 
+/**
+ * Gen 1 and Gen 2 hubs both report mainProcessor.name = "PowerView Hub", so the
+ * name alone can never identify the generation. The firmware major revision does:
+ * Gen 1 reports revision 1, Gen 2 reports revision 2. Gen 1 hubs additionally
+ * expose no `radio` firmware block at all.
+ */
+export function generationHintFromFirmware(
+  firmware: { mainProcessor?: { revision?: number } } | undefined,
+): HubCapabilities['generationHint'] {
+  const revision = firmware?.mainProcessor?.revision;
+  if (revision === 1) {
+    return 'gen1';
+  }
+  if (revision === 2) {
+    return 'gen2';
+  }
+  return 'unknown';
+}
+
 export async function probeHubCapabilities(
   hub: PowerViewHub,
   log: Logging,
@@ -36,8 +55,11 @@ export async function probeHubCapabilities(
   };
 
   try {
-    await hub.getFirmwareVersion();
+    const firmware = await hub.getFirmwareVersion();
     capabilities.fwVersionSupported = true;
+    if (capabilities.generationHint === 'unknown') {
+      capabilities.generationHint = generationHintFromFirmware(firmware);
+    }
   } catch (err) {
     if (isHubError(err) && err.code === HubErrorCode.NotFound) {
       log.debug('Hub does not expose GET /api/fwversion');

@@ -67,3 +67,64 @@ describe('PowerViewHub.requestJson', () => {
     );
   });
 });
+
+describe('PowerViewHub request timeout', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('aborts a hung request instead of waiting forever', async () => {
+    vi.useFakeTimers();
+    // A hub that accepts the connection and never answers. Node's fetch has no
+    // default timeout, so without an AbortController this promise never settles.
+    vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => {
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          reject(new DOMException('The operation was aborted.', 'AbortError'));
+        });
+      });
+    }));
+
+    const request = hub().requestJson('http://127.0.0.1/api/userdata', undefined, {
+      retriesOnMaintenance: false,
+    });
+    const assertion = expect(request).rejects.toSatisfy(
+      (err: unknown) => isHubError(err) && err.code === HubErrorCode.Timeout,
+    );
+    await vi.advanceTimersByTimeAsync(20000);
+    await assertion;
+  });
+});
+
+describe('PowerViewHub queue', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('advances past a request whose URL cannot be built', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({ shade: { id: 2, name: 'UmlnaHQ=' } }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    // A host that makes `new URL()` throw. Upstream builds the URL outside the
+    // try block, so the throw escapes before `queue.shift()` — the head of the
+    // queue is never removed, nothing reschedules, and every later request hangs
+    // unresolved forever.
+    const h = new PowerViewHub(log, 'bad host:::');
+    const first = h.getShade(1, { refresh: true });
+    const second = h.getShade(2, { refresh: true });
+
+    const firstAssertion = expect(first).rejects.toBeInstanceOf(Error);
+    const secondAssertion = expect(second).rejects.toBeInstanceOf(Error);
+    await vi.runAllTimersAsync();
+    await firstAssertion;
+    await secondAssertion;
+  });
+});
