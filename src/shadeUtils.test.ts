@@ -7,6 +7,8 @@ import {
   formatShadeFirmware,
   isLowBattery,
   isWithinQuietHours,
+  resolveShadeCapability,
+  shadeKindForCapability,
   lookupPosition,
   msUntilNextDailyRun,
   parsePositionMap,
@@ -359,5 +361,62 @@ describe('resolveQuietHours', () => {
   it('falls back to defaults on out-of-range input', () => {
     expect(resolveQuietHours({ quietHours: { start: 25, end: -3 } }))
       .toEqual({ startHour: 21, endHour: 8 });
+  });
+});
+
+describe('resolveShadeCapability', () => {
+  it('prefers the hub-reported capabilities field when present', () => {
+    // The hub knows better than any type table; type 1 would say 0.
+    expect(resolveShadeCapability({ type: 1, capabilities: 7 })).toBe(7);
+    expect(resolveShadeCapability({ type: 1, capabilities: 0 })).toBe(0);
+  });
+
+  it('falls back to the documented type table', () => {
+    expect(resolveShadeCapability({ type: 1 })).toBe(0);   // Roller/Solar
+    expect(resolveShadeCapability({ type: 7 })).toBe(6);   // Top Down - reversed rail
+    expect(resolveShadeCapability({ type: 23 })).toBe(1);  // Silhouette
+    expect(resolveShadeCapability({ type: 51 })).toBe(2);  // Venetian, tilt 180
+    expect(resolveShadeCapability({ type: 55 })).toBe(3);  // Vertical slats
+    expect(resolveShadeCapability({ type: 66 })).toBe(5);  // Shutter, tilt only
+    expect(resolveShadeCapability({ type: 79 })).toBe(8);  // Duolite lift
+  });
+
+  it('ignores an out-of-range capabilities value and uses the table', () => {
+    expect(resolveShadeCapability({ type: 7, capabilities: 99 })).toBe(6);
+    expect(resolveShadeCapability({ type: 7, capabilities: -1 })).toBe(6);
+  });
+
+  it('returns undefined for an unknown type with no capabilities', () => {
+    expect(resolveShadeCapability({ type: 12345 })).toBeUndefined();
+    expect(resolveShadeCapability({})).toBeUndefined();
+  });
+
+  it('covers every type in the documented table', () => {
+    const documented = {
+      1: 0, 4: 0, 5: 0, 6: 0, 7: 6, 8: 7, 9: 7, 18: 1, 23: 1, 38: 9,
+      42: 0, 43: 1, 44: 1, 47: 7, 49: 0, 51: 2, 54: 3, 55: 3, 56: 3,
+      62: 2, 65: 8, 66: 5, 69: 4, 70: 4, 71: 4, 79: 8,
+    } as Record<number, number>;
+    for (const [type, capability] of Object.entries(documented)) {
+      expect(resolveShadeCapability({ type: Number(type) }), `type ${type}`).toBe(capability);
+    }
+    expect(Object.keys(documented)).toHaveLength(26);
+  });
+});
+
+describe('shadeKindForCapability', () => {
+  it('maps every documented capability to a kind', () => {
+    for (let capability = 0; capability <= 9; ++capability) {
+      expect(shadeKindForCapability(capability), `capability ${capability}`).toBeDefined();
+    }
+  });
+
+  it('distinguishes the tilt ranges that share a kind today', () => {
+    // Capability 1 is 90 degrees, 2 and 5 are 180. Conflating them mis-scales tilt.
+    expect(shadeKindForCapability(1)).not.toEqual(shadeKindForCapability(2));
+  });
+
+  it('treats top-down as its own kind, since its primary rail is reversed', () => {
+    expect(shadeKindForCapability(6)).not.toEqual(shadeKindForCapability(0));
   });
 });

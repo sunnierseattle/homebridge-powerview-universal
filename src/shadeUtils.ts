@@ -1,6 +1,8 @@
 import { HubPosition, type ShadePositions } from './powerviewHub.js';
 import {
   BATTERY_POLL_DEFAULT_AT,
+  SHADE_TYPE_CAPABILITY,
+  ShadeKind,
   QUIET_END_HOUR,
   QUIET_START_HOUR,
   type PowerViewPlatformConfig,
@@ -339,4 +341,46 @@ export function resolveQuietHours(config: Partial<PowerViewPlatformConfig>): Qui
   }
 
   return { startHour: QUIET_START_HOUR, endHour: QUIET_END_HOUR };
+}
+
+
+/**
+ * Resolves a shade's ShadeCapabilities value: the hub's own `capabilities`
+ * field when it reports one, otherwise the documented type table.
+ *
+ * Capability is the right axis, not `type`: 26 published types collapse onto
+ * 10 capability classes, and behaviour (reversed rail, tilt range, dual
+ * panels) follows the capability. Older hubs omit the field entirely.
+ */
+export function resolveShadeCapability(
+  shade: { type?: number; capabilities?: number },
+): number | undefined {
+  const reported = shade.capabilities;
+  if (typeof reported === 'number' && Number.isInteger(reported) && reported >= 0 && reported <= 9) {
+    return reported;
+  }
+
+  const type = shade.type;
+  if (typeof type !== 'number') {
+    return undefined;
+  }
+
+  return SHADE_TYPE_CAPABILITY[type];
+}
+
+/** Maps a ShadeCapabilities value onto the kind the plugin drives it as. */
+export function shadeKindForCapability(capability: number): ShadeKind | undefined {
+  switch (capability) {
+  case 0: return ShadeKind.ROLLER;
+  case 1: return ShadeKind.HORIZONTAL;
+  case 2: return ShadeKind.HORIZONTAL_180;
+  case 3:
+  case 4: return ShadeKind.VERTICAL;
+  case 5: return ShadeKind.TILT_ONLY;
+  case 6: return ShadeKind.TOP_DOWN;
+  case 7: return ShadeKind.TOP_BOTTOM;
+  case 8:
+  case 9: return ShadeKind.DUAL_OVERLAPPED;
+  default: return undefined;
+  }
 }

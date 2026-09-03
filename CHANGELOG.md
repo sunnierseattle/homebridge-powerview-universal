@@ -2,6 +2,25 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.1.4-local.8] - 2026-09-03
+
+### Changed
+
+- **Shade behaviour is resolved from ShadeCapabilities, not from a hand-picked type list.** The
+  old `SHADE_TYPE_IDS` knew 6 shade types; the PowerView appendix documents **26**, mapped onto
+  10 capability classes. That left 20 types falling through to "unknown type, assuming roller",
+  and for 17 of them the roller assumption is wrong. Capability now comes from the hub's own
+  `capabilities` field when it reports one, falling back to the documented type table.
+  `SHADE_TYPE_IDS` is removed; it also listed type 16, which appears nowhere in the published
+  table.
+- **Unsupported capabilities are now stated rather than silently mistreated.** Capability 6 runs
+  its primary rail *reversed*, 2 and 5 tilt through 180 degrees rather than 90, and 8/9 have
+  overlapped panels. The plugin still drives these as rollers, but warns once per shade that the
+  position or tilt may be wrong instead of reporting a confident wrong number.
+- Positions are logged only when they change, and the message says what it is. `Set for <id>`
+  fired at info on every read — four identical lines in twelve seconds during one restart — and
+  read like a write when it was a read.
+
 ## [3.1.4-local.7] - 2026-09-03
 
 ### Fixed

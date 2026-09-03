@@ -33,14 +33,34 @@ export enum ShadeKind {
   TOP_BOTTOM = 2,
   HORIZONTAL = 3,
   VERTICAL = 4,
+  /** Capability 6. Primary rail runs reversed relative to bottom-up shades. */
+  TOP_DOWN = 5,
+  /** Capability 2. Tilt spans 180 degrees, not the 90 that HORIZONTAL assumes. */
+  HORIZONTAL_180 = 6,
+  /** Capability 5. Tilt only, no lift. */
+  TILT_ONLY = 7,
+  /** Capabilities 8 and 9. Duolite / overlapped panels. */
+  DUAL_OVERLAPPED = 8,
 }
 
-export const SHADE_TYPE_IDS = {
-  ROLLER: [1, 5, 42],
-  TOP_BOTTOM: [8],
-  HORIZONTAL: [18, 23],
-  VERTICAL: [16],
-} as const;
+/**
+ * Shade type -> ShadeCapabilities, from the PowerView Hub REST API v2 appendix
+ * (jlaur/hdpowerview-doc v1.0.4). The official specification leaves the
+ * ShadeType schema empty, so this table is the only published mapping.
+ */
+export const SHADE_TYPE_CAPABILITY: Readonly<Record<number, number>> = {
+  1: 0, 4: 0, 5: 0, 6: 0, 7: 6, 8: 7, 9: 7, 18: 1, 23: 1, 38: 9,
+  42: 0, 43: 1, 44: 1, 47: 7, 49: 0, 51: 2, 54: 3, 55: 3, 56: 3,
+  62: 2, 65: 8, 66: 5, 69: 4, 70: 4, 71: 4, 79: 8,
+};
+
+/** Kinds whose position and tilt maths this plugin actually implements. */
+export const FULLY_SUPPORTED_KINDS: readonly ShadeKind[] = [
+  ShadeKind.ROLLER,
+  ShadeKind.TOP_BOTTOM,
+  ShadeKind.HORIZONTAL,
+  ShadeKind.VERTICAL,
+];
 
 export const SUBTYPE = {
   BOTTOM: 'bottom',

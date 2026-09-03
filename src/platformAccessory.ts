@@ -20,6 +20,7 @@ type PositionMap = Partial<Record<HubPosition, number>> | null;
 export class PowerViewPlatformAccessory {
   private lastShade?: PowerViewShade;
   private holdPositionWired = false;
+  private lastLoggedPositions?: string;
 
   constructor(
     private readonly platform: PowerViewPlatform,
@@ -355,7 +356,13 @@ export class PowerViewPlatformAccessory {
       return positions;
     }
 
-    this.log.info('Set for', shade.id, { positions: shade.positions });
+    // Logged only on change: this fires on every read, and four identical
+    // lines in twelve seconds is noise, not signal.
+    const serialised = JSON.stringify(shade.positions);
+    if (serialised !== this.lastLoggedPositions) {
+      this.lastLoggedPositions = serialised;
+      this.log.info('Shade %d reported positions %s', shade.id, serialised);
+    }
 
     for (let i = 1; shade.positions[`posKind${i}`] != null; ++i) {
       const position = shade.positions[`posKind${i}`];

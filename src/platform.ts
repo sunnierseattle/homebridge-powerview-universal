@@ -37,13 +37,15 @@ import {
   positionMapsEqual,
   resolveBatteryPollSettings,
   resolveQuietHours,
+  resolveShadeCapability,
+  shadeKindForCapability,
   sanitizePositionMap,
 } from './shadeUtils.js';
 import {
   PLUGIN_NAME,
   PLATFORM_NAME,
   SHADE_POLL_INTERVAL_MS,
-  SHADE_TYPE_IDS,
+  FULLY_SUPPORTED_KINDS,
   ShadeKind,
   SUBTYPE,
   type PowerViewPlatformConfig,
@@ -80,6 +82,7 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
 
   private readonly lastPositions = new Map<number, PositionMap>();
   private readonly positionsOmittedLogged = new Set<number>();
+  private readonly unsupportedCapabilityLogged = new Set<number>();
 
   /** Shades with a background refresh already in flight, so reads don't pile up. */
   private readonly pendingRefresh = new Set<number>();
@@ -184,22 +187,46 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
       return ShadeKind.VERTICAL;
     }
 
-    const type = shade.type ?? 0;
-    if ((SHADE_TYPE_IDS.ROLLER as readonly number[]).includes(type)) {
+    const capability = resolveShadeCapability(shade);
+    if (capability === undefined) {
+      this.log.warn(
+        'Shade %d has undocumented type %s; treating as roller. '
+        + 'Override with forceRollerShades / forceTopBottomShades / '
+        + 'forceHorizontalShades / forceVerticalShades if that is wrong.',
+        shade.id,
+        String(shade.type ?? 'none'),
+      );
       return ShadeKind.ROLLER;
     }
-    if ((SHADE_TYPE_IDS.TOP_BOTTOM as readonly number[]).includes(type)) {
-      return ShadeKind.TOP_BOTTOM;
-    }
-    if ((SHADE_TYPE_IDS.HORIZONTAL as readonly number[]).includes(type)) {
-      return ShadeKind.HORIZONTAL;
-    }
-    if ((SHADE_TYPE_IDS.VERTICAL as readonly number[]).includes(type)) {
-      return ShadeKind.VERTICAL;
+
+    const kind = shadeKindForCapability(capability) ?? ShadeKind.ROLLER;
+
+    if (!FULLY_SUPPORTED_KINDS.includes(kind)) {
+      // Say so rather than silently driving it as a roller: capability 6 runs
+      // its primary rail reversed, 2 and 5 tilt through 180 rather than 90,
+      // and 8/9 have overlapped panels. Positions will be wrong for these.
+      this.warnUnsupportedCapabilityOnce(shade.id, capability, kind);
     }
 
-    this.log.warn(`Shade ${shade.id} has unknown type ${type}, assuming roller`);
-    return ShadeKind.ROLLER;
+    return kind;
+  }
+
+  private warnUnsupportedCapabilityOnce(
+    shadeId: number,
+    capability: number,
+    kind: ShadeKind,
+  ): void {
+    if (this.unsupportedCapabilityLogged.has(shadeId)) {
+      return;
+    }
+    this.unsupportedCapabilityLogged.add(shadeId);
+    this.log.warn(
+      'Shade %d is capability %d (%s), which this plugin does not fully implement. '
+      + 'Its reported position or tilt may be wrong. Logged once per shade.',
+      shadeId,
+      capability,
+      ShadeKind[kind],
+    );
   }
 
   configureAccessory(accessory: PlatformAccessory): void {
