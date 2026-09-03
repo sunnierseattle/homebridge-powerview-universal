@@ -5,7 +5,9 @@
   "strictValidation": false,
   "schema": {
     "type": "object",
-    "required": ["name"],
+    "required": [
+      "name"
+    ],
     "additionalProperties": false,
     "properties": {
       "name": {
@@ -37,26 +39,78 @@
         "default": false,
         "description": "When enabled, HomeKit reads fail on hub errors instead of returning the last known position."
       },
+      "batteryPolling": {
+        "title": "Daily battery poll",
+        "type": "boolean",
+        "default": false,
+        "description": "Off by default. When enabled, refreshes shade battery levels once a day. Each poll wakes every shade motor over RF: it is audible and nudges the shade, so do not schedule it near sleeping hours. Battery level still reaches HomeKit from ordinary hub reads without this."
+      },
+      "batteryPollAt": {
+        "title": "Battery poll time",
+        "type": "string",
+        "default": "14:00",
+        "pattern": "^([01]?[0-9]|2[0-3]):[0-5][0-9]$",
+        "placeholder": "14:00",
+        "description": "Local time of day (HH:MM) for the daily battery poll.",
+        "condition": {
+          "functionBody": "return model.batteryPolling === true;"
+        }
+      },
+      "syncPositionsOnStart": {
+        "title": "Sync positions at startup",
+        "type": "boolean",
+        "default": true,
+        "description": "Re-read shade positions over RF once when the plugin starts, for shades the hub has no position for. Wakes those motors briefly. Without it, a shade moved by remote can show a stale position indefinitely."
+      },
+      "quietHours": {
+        "title": "Quiet hours",
+        "type": "object",
+        "description": "Local-time window in which the plugin will not actuate hardware. Applies to the startup position sync, so an unattended overnight restart stays silent. Set both to the same hour to disable.",
+        "properties": {
+          "start": {
+            "title": "Quiet from (hour)",
+            "type": "integer",
+            "default": 21,
+            "minimum": 0,
+            "maximum": 23
+          },
+          "end": {
+            "title": "Quiet until (hour)",
+            "type": "integer",
+            "default": 8,
+            "minimum": 0,
+            "maximum": 23
+          }
+        }
+      },
       "forceRollerShades": {
         "title": "Force roller shade IDs",
         "type": "array",
-        "items": { "type": "integer" },
+        "items": {
+          "type": "integer"
+        },
         "description": "Treat these shade IDs as roller shades regardless of hub type."
       },
       "forceTopBottomShades": {
         "title": "Force top/bottom shade IDs",
         "type": "array",
-        "items": { "type": "integer" }
+        "items": {
+          "type": "integer"
+        }
       },
       "forceHorizontalShades": {
         "title": "Force horizontal vane shade IDs",
         "type": "array",
-        "items": { "type": "integer" }
+        "items": {
+          "type": "integer"
+        }
       },
       "forceVerticalShades": {
         "title": "Force vertical vane shade IDs",
         "type": "array",
-        "items": { "type": "integer" }
+        "items": {
+          "type": "integer"
+        }
       }
     }
   }

@@ -508,10 +508,19 @@ export class PowerViewHub {
     });
   }
 
+  /** Halts a shade mid-travel (HomeKit HoldPosition). */
+  async stopShade(shadeId: number): Promise<PowerViewShade> {
+    return this.motionRequest(shadeId, 'stop');
+  }
+
   async jogShade(shadeId: number): Promise<PowerViewShade> {
+    return this.motionRequest(shadeId, 'jog');
+  }
+
+  private async motionRequest(shadeId: number, motion: string): Promise<PowerViewShade> {
     return new Promise((resolve, reject) => {
       for (const queued of this.queue) {
-        if (queued.shadeId === shadeId && queued.data?.motion === 'jog') {
+        if (queued.shadeId === shadeId && queued.data?.motion === motion) {
           queued.callbacks.push((err, shade) => {
             if (err) {
               reject(err);
@@ -527,7 +536,7 @@ export class PowerViewHub {
 
       this.queueRequest({
         shadeId,
-        data: { motion: 'jog' },
+        data: { motion },
         callbacks: [(err, shade) => {
           if (err) {
             reject(err);

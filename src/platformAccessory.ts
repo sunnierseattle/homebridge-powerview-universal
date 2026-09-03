@@ -97,15 +97,17 @@ export class PowerViewPlatformAccessory {
   }
 
   private wireHoldPosition(service: Service): void {
-    if (this.holdPositionWired || this.accessory.context.jogSupported === false) {
+    if (this.holdPositionWired) {
       return;
     }
 
+    // HoldPosition means "stop where you are". It was previously wired to
+    // jogShade, which wiggles the shade instead of halting it.
     const hold = service.getCharacteristic(this.Characteristic.HoldPosition);
     hold.removeAllListeners('set');
     hold.on('set', (value, callback) => {
       if (value === true || value === 1) {
-        void this.platform.jogShade(this.shadeId).then(() => {
+        void this.platform.stopShade(this.shadeId).then(() => {
           callback(null);
         }).catch((err) => {
           callback(err instanceof Error ? err : new Error(String(err)));

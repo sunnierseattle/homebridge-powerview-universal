@@ -1,4 +1,75 @@
 import { HubPosition, type ShadePositions } from './powerviewHub.js';
+import {
+  BATTERY_POLL_DEFAULT_AT,
+  QUIET_END_HOUR,
+  QUIET_START_HOUR,
+  type PowerViewPlatformConfig,
+} from './settings.js';
+
+export interface TimeOfDay {
+  hour: number;
+  minute: number;
+}
+
+export interface BatteryPollSettings {
+  enabled: boolean;
+  at: TimeOfDay;
+}
+
+/** Parses an "HH:MM" local time. Returns null on anything malformed. */
+export function parseTimeOfDay(value: unknown): TimeOfDay | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const match = /^(\d{1,2}):(\d{2})$/.exec(value.trim());
+  if (!match) {
+    return null;
+  }
+
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+
+  return hour <= 23 && minute <= 59 ? { hour, minute } : null;
+}
+
+/**
+ * Milliseconds from `now` until the next occurrence of `hour:minute` local time,
+ * rolling to tomorrow when today's slot has already passed.
+ *
+ * Callers must recompute this from a fresh Date after every run rather than
+ * adding 24h to the previous deadline: only recomputing keeps the poll pinned to
+ * the same wall-clock time across a DST change.
+ */
+export function msUntilNextDailyRun(now: Date, hour: number, minute: number): number {
+  const next = new Date(now);
+  next.setHours(hour, minute, 0, 0);
+
+  if (next.getTime() <= now.getTime()) {
+    next.setDate(next.getDate() + 1);
+    next.setHours(hour, minute, 0, 0);
+  }
+
+  return next.getTime() - now.getTime();
+}
+
+/**
+ * Resolves battery-poll timing from user config.
+ *
+ * Polling is opt-in: `updateBatteryLevel=true` is an RF round-trip that audibly
+ * wakes the shade motor and nudges the shade, so a default-on timer actuates
+ * hardware in someone's home that they never asked for. Battery state still
+ * reaches HomeKit from ordinary hub reads; this poll only forces a fresh
+ * measurement.
+ */
+export function resolveBatteryPollSettings(
+  config: Partial<PowerViewPlatformConfig>,
+): BatteryPollSettings {
+  return {
+    enabled: config.batteryPolling === true,
+    at: parseTimeOfDay(config.batteryPollAt) ?? (parseTimeOfDay(BATTERY_POLL_DEFAULT_AT) as TimeOfDay),
+  };
+}
 
 export function decodeBase64Name(encoded: string | undefined, fallback: string): string {
   if (!encoded) {
@@ -10,6 +81,9 @@ export function decodeBase64Name(encoded: string | undefined, fallback: string):
     return encoded;
   }
 }
+
+/** A shade's reported positions, keyed by position kind. */
+export type PositionMap = Partial<Record<HubPosition, number>>;
 
 /** API PositionKind value when the hub reports a position error. */
 export const POSITION_KIND_ERROR = 4;
@@ -154,4 +228,115 @@ export function formatShadeFirmware(firmware?: {
     return undefined;
   }
   return `${firmware.revision}.${firmware.subRevision}.${firmware.build}`;
+}
+
+
+export type PositionLookup =
+  | { kind: 'ok'; value: number }
+  | { kind: 'missing' }
+  | { kind: 'invalid'; value: unknown };
+
+/**
+ * Distinguishes "the hub did not report this position" from "the hub reported
+ * something unusable".
+ *
+ * The distinction is not academic: a PowerView Gen 2 hub returns no `positions`
+ * object at all on a cached read — positions exist only after a `refresh=true`
+ * read or a set — so `missing` is the normal path on every HomeKit read, while
+ * `invalid` means the hub really did send bad data. Collapsing the two logged a
+ * warning on the happy path 77 times a day and pointed diagnosis at the hub's
+ * values when the hub had sent no values at all.
+ */
+export function lookupPosition(positions: PositionMap, position: HubPosition): PositionLookup {
+  if (!Object.prototype.hasOwnProperty.call(positions, position)) {
+    return { kind: 'missing' };
+  }
+
+  const value = positions[position];
+  return typeof value === 'number' && Number.isFinite(value)
+    ? { kind: 'ok', value }
+    : { kind: 'invalid', value };
+}
+
+/**
+ * Validates a position map restored from persisted accessory context, which is
+ * plain JSON written by an earlier run and must not be trusted structurally.
+ */
+export function sanitizePositionMap(value: unknown): PositionMap {
+  const clean: PositionMap = {};
+
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return clean;
+  }
+
+  for (const [key, entry] of Object.entries(value)) {
+    const kind = Number(key);
+    if (!Number.isInteger(kind) || !isValidPositionKind(kind)) {
+      continue;
+    }
+    if (typeof entry === 'number' && Number.isFinite(entry)) {
+      clean[kind as HubPosition] = entry;
+    }
+  }
+
+  return clean;
+}
+
+
+/** Shallow equality for position maps, treating a missing map as empty. */
+export function positionMapsEqual(a: PositionMap | undefined, b: PositionMap | undefined): boolean {
+  const left = a ?? {};
+  const right = b ?? {};
+  const leftKeys = Object.keys(left);
+
+  if (leftKeys.length !== Object.keys(right).length) {
+    return false;
+  }
+
+  return leftKeys.every((key) => {
+    const kind = Number(key) as HubPosition;
+    return Object.prototype.hasOwnProperty.call(right, kind) && left[kind] === right[kind];
+  });
+}
+
+
+export interface QuietHours {
+  /** Start of the quiet window, inclusive. Equal to endHour means "no quiet window". */
+  startHour: number;
+  /** End of the quiet window, exclusive. */
+  endHour: number;
+}
+
+/**
+ * True when `date`'s local hour falls in [startHour, endHour), wrapping across
+ * midnight when startHour > endHour. An empty window is never within.
+ */
+export function isWithinQuietHours(date: Date, startHour: number, endHour: number): boolean {
+  if (startHour === endHour) {
+    return false;
+  }
+
+  const hour = date.getHours();
+  return startHour < endHour
+    ? hour >= startHour && hour < endHour
+    : hour >= startHour || hour < endHour;
+}
+
+/** Resolves the window during which the plugin must not actuate hardware. */
+export function resolveQuietHours(config: Partial<PowerViewPlatformConfig>): QuietHours {
+  const quiet = config.quietHours;
+
+  if (quiet === false) {
+    return { startHour: 0, endHour: 0 };
+  }
+
+  if (
+    quiet
+    && Number.isInteger(quiet.start) && quiet.start >= 0 && quiet.start <= 23
+    && Number.isInteger(quiet.end) && quiet.end >= 0 && quiet.end <= 23
+  ) {
+    return { startHour: quiet.start, endHour: quiet.end };
+  }
+
+  return { startHour: QUIET_START_HOUR, endHour: QUIET_END_HOUR };
 }

@@ -2,6 +2,80 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.1.4-local.7] - 2026-09-03
+
+### Fixed
+
+- **HoldPosition jogged the shade instead of stopping it.** HomeKit's `HoldPosition` was wired to
+  `jogShade`, so asking a shade to stop made it wiggle. It now sends `motion: "stop"`, and is no
+  longer gated on `jogSupported`, which was the wrong capability.
+- **Positions are re-synced once at startup**, restoring what `local.5` removed. Persisting the
+  cache meant `value == null` was never true, so `scheduleBackgroundRefresh` never fired and a
+  stale position could be served indefinitely. The sync only refreshes shades the hub has no
+  position for, so it costs nothing when the hub is already current.
+
+### Added
+
+- `syncPositionsOnStart` (boolean, default `true`) and `quietHours` (default 21:00-08:00).
+  Homebridge can restart unattended, so the startup sync is skipped inside the quiet window
+  rather than being free to wake every motor at 03:00.
+- `PowerViewHub.stopShade()`; `jogShade` and `stopShade` now share one `motionRequest` path.
+
+## [3.1.4-local.6] - 2026-09-03
+
+### Fixed
+
+- **Position persistence in `local.5` never reached disk.** Mutating `accessory.context` does not
+  write `cachedAccessories`; `api.updatePlatformAccessories()` is what schedules the save. Verified
+  by inspecting the on-disk cache after a `local.5` restart — every `lastPositions` was absent.
+  Now saved, guarded by `positionMapsEqual` so an ordinary read that changes nothing does not
+  rewrite the cache file.
+
+## [3.1.4-local.5] - 2026-09-03
+
+### Fixed
+
+- **`Invalid position value received` no longer fires on the happy path.** A PowerView Gen 2 hub
+  returns no `positions` object at all on a cached read — positions exist only after a
+  `refresh=true` read or a set — so the key was absent on *every* HomeKit position read and the
+  warning fired 77 times in one day. Absent is now `debug` plus a once-per-shade `info`; only a
+  key that is present with unusable data still warns, and the message now includes the value.
+- **Last known positions persist across restarts.** They are written to accessory context and
+  restored (validated) in `configureAccessory`, so a cold cache no longer falls through to
+  `resolvePositionValue()`'s `0` — which reads as "fully closed" in the Home app until the
+  background refresh lands, and sticks if that refresh times out.
+
+### Changed
+
+- `PositionMap` is now defined once in `shadeUtils.ts` instead of being redeclared in `platform.ts`.
+
+## [3.1.4-local.4] - 2026-09-03
+
+### Changed
+
+- **Battery polling is now opt-in and off by default.** It previously ran every 6 hours on a
+  timer anchored to plugin start, with no config option. `updateBatteryLevel=true` is an RF
+  round-trip that wakes the shade motor — audible, and it nudges the shade — so on a 6-hour
+  period at least one poll always landed overnight regardless of restart time. Observed waking
+  a household at 05:54 (5 shades, ~4s each).
+- Polling, when enabled, runs **once per day at a configurable local time** (`batteryPollAt`,
+  default `14:00`) instead of on an interval. The next deadline is recomputed from the current
+  time after every run, so the poll stays pinned to the same wall-clock time across DST changes.
+- Battery poll runs are logged at `info`. The old poll logged nothing on success, which is why
+  the shade movement could not be attributed from the default log.
+
+### Added
+
+- `batteryPolling` (boolean, default `false`) and `batteryPollAt` (`"HH:MM"`) config options,
+  both exposed in the Homebridge UI schema.
+- The battery poll timer is cleared on Homebridge `shutdown`.
+
+### Notes
+
+- Disabling the poll does not remove battery reporting: `batteryStrength` / `batteryStatus` ride
+  along on ordinary hub reads and still update the HomeKit Battery service. The poll only forces
+  a fresh measurement from the shade.
+
 ## [3.1.2] - 2026-05-18
 
 ### Added

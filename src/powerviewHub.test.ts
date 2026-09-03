@@ -167,3 +167,26 @@ describe('PowerViewHub serialisation', () => {
     expect(maxInFlight).toBe(1);
   });
 });
+
+describe('PowerViewHub.stopShade', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('sends motion stop, not jog', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({ shade: { id: 7 } }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await hub().stopShade(7);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/api/shades/7');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(init.body)).toEqual({ shade: { motion: 'stop' } });
+  });
+});

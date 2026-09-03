@@ -25,9 +25,21 @@ import {
   PowerViewPlatformAccessory,
   type CharacteristicCallback,
 } from './platformAccessory.js';
-import { POSITION_KIND_ERROR, decodeBase64Name } from './shadeUtils.js';
 import {
-  BATTERY_POLL_INTERVAL_MS,
+  POSITION_KIND_ERROR,
+  type BatteryPollSettings,
+  type PositionMap,
+  type QuietHours,
+  decodeBase64Name,
+  isWithinQuietHours,
+  lookupPosition,
+  msUntilNextDailyRun,
+  positionMapsEqual,
+  resolveBatteryPollSettings,
+  resolveQuietHours,
+  sanitizePositionMap,
+} from './shadeUtils.js';
+import {
   PLUGIN_NAME,
   PLATFORM_NAME,
   SHADE_POLL_INTERVAL_MS,
@@ -42,7 +54,6 @@ function shadeIdArray(value: unknown): number[] {
   return Array.isArray(value) ? value.filter((id): id is number => typeof id === 'number') : [];
 }
 
-type PositionMap = Partial<Record<HubPosition, number>>;
 
 export class PowerViewPlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service;
@@ -56,6 +67,9 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
   private hubName?: string;
 
   private readonly hub: PowerViewHub;
+  private readonly batteryPoll: BatteryPollSettings;
+  private readonly quietHours: QuietHours;
+  private readonly syncPositionsOnStart: boolean;
   private readonly refreshShades: boolean;
   private readonly pollShadesForUpdate: boolean;
   private readonly strictErrors: boolean;
@@ -65,12 +79,13 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
   private readonly forceVerticalShades: number[];
 
   private readonly lastPositions = new Map<number, PositionMap>();
+  private readonly positionsOmittedLogged = new Set<number>();
 
   /** Shades with a background refresh already in flight, so reads don't pile up. */
   private readonly pendingRefresh = new Set<number>();
   private readonly batteryRefreshDisabled = new Set<number>();
   private readonly posKindErrorLogged = new Set<number>();
-  private batteryPollTimer?: ReturnType<typeof setInterval>;
+  private batteryPollTimer?: ReturnType<typeof setTimeout>;
 
   constructor(
     public readonly log: Logging,
@@ -89,6 +104,9 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
       : 'powerview-hub.local';
     this.hub = new PowerViewHub(log, host);
 
+    this.batteryPoll = resolveBatteryPollSettings(config);
+    this.quietHours = resolveQuietHours(config);
+    this.syncPositionsOnStart = config.syncPositionsOnStart !== false;
     this.refreshShades = config.refreshShades === true;
     this.pollShadesForUpdate = config.pollShadesForUpdate === true;
     this.strictErrors = config.strictErrors === true;
@@ -101,6 +119,13 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
     this.api.on('didFinishLaunching', () => {
       void this.onLaunch();
     });
+
+    this.api.on('shutdown', () => {
+      if (this.batteryPollTimer) {
+        clearTimeout(this.batteryPollTimer);
+        this.batteryPollTimer = undefined;
+      }
+    });
   }
 
   private async onLaunch(): Promise<void> {
@@ -111,6 +136,7 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
       } else {
         await this.updateShades();
       }
+      await this.syncPositionsAtStartup();
       this.scheduleBatteryPoll();
     } catch (err) {
       logError(this.log, 'Failed to start PowerView platform:', err);
@@ -122,7 +148,21 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
       return;
     }
     const existing = this.lastPositions.get(shadeId) ?? {};
-    this.lastPositions.set(shadeId, { ...existing, ...positions });
+    const merged = { ...existing, ...positions };
+    this.lastPositions.set(shadeId, merged);
+
+    // Persisted so a restart answers HomeKit with the last known position rather
+    // than resolvePositionValue()'s 0, which reads as "fully closed" until the
+    // background refresh lands — and sticks if that refresh times out.
+    //
+    // Mutating context alone does not write cachedAccessories to disk;
+    // updatePlatformAccessories() is what schedules the save. Only call it when
+    // the map actually changed, so ordinary reads don't rewrite the cache file.
+    const accessory = this.accessories[shadeId];
+    if (accessory && !positionMapsEqual(accessory.context.lastPositions, merged)) {
+      accessory.context.lastPositions = merged;
+      this.api.updatePlatformAccessories([accessory]);
+    }
   }
 
   getCachedPosition(shadeId: number, position: HubPosition): number | undefined {
@@ -189,6 +229,11 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
 
       if (shadeAccessory.context.jogSupported === undefined) {
         shadeAccessory.context.jogSupported = true;
+      }
+
+      const restored = sanitizePositionMap(shadeAccessory.context.lastPositions);
+      if (Object.keys(restored).length > 0) {
+        this.lastPositions.set(shadeId, restored);
       }
 
       this.registerHandler(shadeAccessory);
@@ -329,16 +374,88 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
       });
   }
 
+  /**
+   * Re-reads positions once at startup for shades the hub has no position for.
+   *
+   * The hub only holds a position for a while after a set or refresh, and a
+   * shade moved by remote is never reported at all — so without this, a
+   * restored cache would be served to HomeKit indefinitely with nothing ever
+   * correcting it. Startup is the one moment where an RF wake per shade buys
+   * accuracy without recurring cost; quiet hours guard the unattended restart.
+   */
+  private async syncPositionsAtStartup(): Promise<void> {
+    if (!this.syncPositionsOnStart) {
+      this.log.info('Startup position sync: disabled');
+      return;
+    }
+
+    const { startHour, endHour } = this.quietHours;
+    if (isWithinQuietHours(new Date(), startHour, endHour)) {
+      this.log.info('Startup position sync: skipped, quiet hours');
+      return;
+    }
+
+    let refreshed = 0;
+    for (const shadeId of Object.keys(this.accessories)) {
+      const id = parseInt(shadeId, 10);
+      try {
+        const { positions } = await this.updateShade(id);
+        if (positions && Object.keys(positions).length > 0) {
+          continue;
+        }
+        await this.updateShade(id, true);
+        refreshed++;
+      } catch (err) {
+        logError(this.log, `Startup position sync failed for shade ${id}:`, err);
+      }
+    }
+
+    this.log.info('Startup position sync: refreshed %d shade(s) over RF', refreshed);
+  }
+
+  async stopShade(shadeId: number): Promise<void> {
+    this.log.info('stopShade %d', shadeId);
+    const shade = await this.hub.stopShade(shadeId);
+    const handler = this.handlers.get(shadeId);
+    this.cachePositions(shadeId, handler?.updateShadeValues(shade) ?? null);
+  }
+
   private scheduleBatteryPoll(): void {
     if (this.batteryPollTimer) {
-      clearInterval(this.batteryPollTimer);
+      clearTimeout(this.batteryPollTimer);
+      this.batteryPollTimer = undefined;
     }
-    this.batteryPollTimer = setInterval(() => {
-      void this.pollBatteryLevels();
-    }, BATTERY_POLL_INTERVAL_MS);
+
+    if (!this.batteryPoll.enabled) {
+      this.log.info('Battery poll: disabled');
+      return;
+    }
+
+    const { hour, minute } = this.batteryPoll.at;
+    // Recomputed from `now` after every run, never by adding 24h, so the poll
+    // stays pinned to the same wall-clock time across DST changes.
+    const delay = msUntilNextDailyRun(new Date(), hour, minute);
+
+    this.log.info(
+      'Battery poll: next run %02d:%02d local, in %dh%02dm',
+      hour,
+      minute,
+      Math.floor(delay / (60 * 60 * 1000)),
+      Math.floor((delay % (60 * 60 * 1000)) / (60 * 1000)),
+    );
+
+    this.batteryPollTimer = setTimeout(() => {
+      void this.pollBatteryLevels().finally(() => {
+        this.scheduleBatteryPoll();
+      });
+    }, delay);
   }
 
   private async pollBatteryLevels(): Promise<void> {
+    // Logged at info deliberately: this moves physical hardware, so it must be
+    // attributable from the default log without enabling debug.
+    this.log.info('Battery poll: refreshing %d shades', Object.keys(this.accessories).length);
+
     for (const shadeId of Object.keys(this.accessories)) {
       const id = parseInt(shadeId, 10);
       if (this.batteryRefreshDisabled.has(id)) {
@@ -487,13 +604,24 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
       return this.getCachedPosition(shadeId, position) ?? null;
     }
 
-    const value = positions[position];
-    if (typeof value === 'number' && Number.isFinite(value)) {
-      this.log.debug('updatePosition %d/%d: %d', shadeId, position, value);
-      return value;
+    const lookup = lookupPosition(positions, position);
+    if (lookup.kind === 'ok') {
+      this.log.debug('updatePosition %d/%d: %d', shadeId, position, lookup.value);
+      return lookup.value;
     }
 
-    this.log.warn('Invalid position value received for %d/%d', shadeId, position);
+    if (lookup.kind === 'invalid') {
+      this.log.warn(
+        'Invalid position value for %d/%d: %s',
+        shadeId, position, String(lookup.value),
+      );
+    } else {
+      // Normal on a Gen 2 hub: a cached read carries no `positions` at all, so
+      // the value arrives later via background refresh. Not an error.
+      this.log.debug('Hub omitted position %d/%d; answering from cache', shadeId, position);
+      this.notePositionsOmittedOnce(shadeId);
+    }
+
     return this.getCachedPosition(shadeId, position) ?? null;
   }
 
@@ -575,6 +703,18 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
     } catch (err) {
       logError(this.log, `Identify/jog failed for shade ${shadeId}:`, err);
     }
+  }
+
+  private notePositionsOmittedOnce(shadeId: number): void {
+    if (this.positionsOmittedLogged.has(shadeId)) {
+      return;
+    }
+    this.positionsOmittedLogged.add(shadeId);
+    this.log.info(
+      'Shade %d: hub returns no positions on cached reads; position will follow from a background '
+      + 'refresh. Logged once per shade.',
+      shadeId,
+    );
   }
 
   warnPositionKindErrorOnce(shadeId: number): void {
