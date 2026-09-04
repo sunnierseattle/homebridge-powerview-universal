@@ -1,5 +1,5 @@
 {
-  "name": "homebridge-powerview-3",
+  "name": "homebridge-powerview-universal",
   "displayName": "PowerView",
   "type": "module",
   "version": "3.1.4-local.8",
@@ -10,12 +10,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/squircle12/homebridge-powerview-3.git"
+    "url": "https://github.com/sunnierseattle/homebridge-powerview-universal.git"
   },
   "bugs": {
-    "url": "https://github.com/squircle12/homebridge-powerview-3/issues"
+    "url": "https://github.com/sunnierseattle/homebridge-powerview-universal/issues"
   },
-  "homepage": "https://github.com/squircle12/homebridge-powerview-3#readme",
+  "homepage": "https://github.com/sunnierseattle/homebridge-powerview-universal#readme",
   "main": "dist/index.js",
   "files": [
     "dist",
@@ -45,5 +45,11 @@
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.59.2",
     "vitest": "^3.2.4"
-  }
+  },
+  "author": "sunnierseattle",
+  "contributors": [
+    "Scott James Remnant",
+    "Owen Selles",
+    "squircle12"
+  ]
 }

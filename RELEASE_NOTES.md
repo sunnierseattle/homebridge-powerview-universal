@@ -1,6 +1,6 @@
 # Release notes
 
-User-facing notes for **homebridge-powerview-3** releases. Use this file when publishing to npm or creating a [GitHub Release](https://github.com/squircle12/homebridge-powerview-3/releases).
+User-facing notes for **homebridge-powerview-universal** releases. Use this file when publishing to npm or creating a [GitHub Release](https://github.com/sunnierseattle/homebridge-powerview-universal/releases).
 
 ## How to publish a version
 
