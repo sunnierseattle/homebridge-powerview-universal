@@ -173,18 +173,23 @@ export class PowerViewHub {
       const controller = new AbortController();
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        const response = await this.serialize(async () => {
+        const { response, body } = await this.serialize(async () => {
           // Start the timeout when the request actually begins, not while queued.
           timer = setTimeout(() => {
             controller.abort();
           }, REQUEST_TIMEOUT_MS);
-          return fetch(url, { ...init, signal: controller.signal });
+          const res = await fetch(url, { ...init, signal: controller.signal });
+
+          // The body is read inside the serialised section on purpose. fetch()
+          // settles as soon as headers arrive, so returning here would stream
+          // the body concurrently with the next request's fetch — which is the
+          // overlap that makes the hub time out and truncate its JSON.
+          const contentType = res.headers.get('content-type') ?? '';
+          const parsed: unknown = contentType.includes('application/json')
+            ? await res.json()
+            : undefined;
+          return { response: res, body: parsed };
         });
-        let body: unknown;
-        const contentType = response.headers.get('content-type') ?? '';
-        if (contentType.includes('application/json')) {
-          body = await response.json();
-        }
 
         const userData = this.extractUserData(body);
 

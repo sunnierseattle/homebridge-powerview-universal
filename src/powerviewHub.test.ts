@@ -190,3 +190,67 @@ describe('PowerViewHub.stopShade', () => {
     expect(JSON.parse(init.body)).toEqual({ shade: { motion: 'stop' } });
   });
 });
+
+describe('PowerViewHub request serialisation', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('does not start the next request until the previous body is read', async () => {
+    vi.useFakeTimers();
+
+    const events: string[] = [];
+    let releaseFirstBody: (() => void) | undefined;
+
+    const fetchMock = vi.fn((url: string) => {
+      events.push(`fetch:${url}`);
+      const first = url.endsWith('/first');
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        json: () => {
+          events.push(`body-start:${url}`);
+          if (!first) {
+            events.push(`body-end:${url}`);
+            return Promise.resolve({ ok: true });
+          }
+          // Headers have arrived, but the body is still streaming. The hub
+          // answers one request at a time, so nothing else may go out yet.
+          return new Promise((resolve) => {
+            releaseFirstBody = () => {
+              events.push(`body-end:${url}`);
+              resolve({ ok: true });
+            };
+          });
+        },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = hub();
+    const first = client.requestJson('http://127.0.0.1/first');
+    const second = client.requestJson('http://127.0.0.1/second');
+
+    // Drain every timer the interval spacing schedules. The second request must
+    // still be blocked, because the first response body has not been consumed.
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(events).toEqual(['fetch:http://127.0.0.1/first', 'body-start:http://127.0.0.1/first']);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    releaseFirstBody?.();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await Promise.all([first, second]);
+
+    expect(events).toEqual([
+      'fetch:http://127.0.0.1/first',
+      'body-start:http://127.0.0.1/first',
+      'body-end:http://127.0.0.1/first',
+      'fetch:http://127.0.0.1/second',
+      'body-start:http://127.0.0.1/second',
+      'body-end:http://127.0.0.1/second',
+    ]);
+  });
+});
