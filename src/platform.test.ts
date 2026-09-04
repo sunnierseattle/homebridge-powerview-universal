@@ -110,4 +110,48 @@ describe('PowerViewPlatform.setPosition', () => {
   });
 });
 
+describe('PowerViewPlatform.updateShades', () => {
+  let harness: Harness;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    harness = createHarness();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  function shadeUrls(fetchMock: ReturnType<typeof stubHub>): string[] {
+    return fetchMock.mock.calls
+      .map((call) => String(call[0]))
+      .filter((url) => /\/api\/shades\/\d+/.test(url));
+  }
+
+  it('does not refetch a shade the list already reported positions for', async () => {
+    const fetchMock = stubHub([
+      { id: 1, name: 'U2hhZGU=', type: 23, positions: { posKind1: 1, position1: 49151 } },
+    ]);
+    const platform = new PowerViewPlatform(harness.log, config(), harness.api);
+
+    const done = platform.updateShades();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await done;
+
+    expect(shadeUrls(fetchMock)).toEqual([]);
+  });
+
+  it('still fetches a shade the list reported no positions for', async () => {
+    const fetchMock = stubHub([{ id: 2, name: 'U2hhZGU=', type: 23 }]);
+    const platform = new PowerViewPlatform(harness.log, config(), harness.api);
+
+    const done = platform.updateShades();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await done;
+
+    expect(shadeUrls(fetchMock)).toHaveLength(1);
+  });
+});
+
 export type { PlatformAccessory, ShadeContext };

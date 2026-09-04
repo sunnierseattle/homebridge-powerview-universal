@@ -61,7 +61,7 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service;
   public readonly Characteristic: typeof Characteristic;
 
-  public readonly accessories: Record<number, PlatformAccessory<ShadeContext>> = {};
+  public readonly accessories = new Map<number, PlatformAccessory<ShadeContext>>();
   private readonly handlers: Map<number, PowerViewPlatformAccessory> = new Map();
 
   public hubVersion?: string;
@@ -171,7 +171,7 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
     // Mutating context alone does not write cachedAccessories to disk;
     // updatePlatformAccessories() is what schedules the save. Only call it when
     // the map actually changed, so ordinary reads don't rewrite the cache file.
-    const accessory = this.accessories[shadeId];
+    const accessory = this.accessories.get(shadeId);
     if (accessory && !positionMapsEqual(accessory.context.lastPositions, merged)) {
       accessory.context.lastPositions = merged;
       this.api.updatePlatformAccessories([accessory]);
@@ -293,7 +293,7 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
 
   private registerHandler(accessory: PlatformAccessory<ShadeContext>): void {
     const shadeId = accessory.context.shadeId;
-    this.accessories[shadeId] = accessory;
+    this.accessories.set(shadeId, accessory);
 
     try {
       const handler = new PowerViewPlatformAccessory(this, accessory, this.log);
@@ -324,8 +324,10 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
     return accessory;
   }
 
-  private updateShadeAccessory(shade: PowerViewShade): PlatformAccessory<ShadeContext> {
-    const accessory = this.accessories[shade.id];
+  private updateShadeAccessory(
+    shade: PowerViewShade,
+    accessory: PlatformAccessory<ShadeContext>,
+  ): PlatformAccessory<ShadeContext> {
     this.log.info('Updating shade %d: %s', shade.id, accessory.displayName);
 
     const newType = this.shadeType(shade);
@@ -344,7 +346,7 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
   private removeShadeAccessory(accessory: PlatformAccessory<ShadeContext>): void {
     this.log.info('Removing shade %d: %s', accessory.context.shadeId, accessory.displayName);
     this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-    delete this.accessories[accessory.context.shadeId];
+    this.accessories.delete(accessory.context.shadeId);
     this.handlers.delete(accessory.context.shadeId);
     this.lastPositions.delete(accessory.context.shadeId);
     this.batteryRefreshDisabled.delete(accessory.context.shadeId);
@@ -368,11 +370,10 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
       }
 
       try {
-        if (!this.accessories[shade.id]) {
-          newShades[shade.id] = this.addShadeAccessory(shade);
-        } else {
-          newShades[shade.id] = this.updateShadeAccessory(shade);
-        }
+        const existing = this.accessories.get(shade.id);
+        newShades[shade.id] = existing
+          ? this.updateShadeAccessory(shade, existing)
+          : this.addShadeAccessory(shade);
 
         if (!this.handlers.has(shade.id)) {
           this.registerHandler(newShades[shade.id]);
@@ -381,11 +382,18 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
         const handler = this.handlers.get(shade.id);
         if (handler) {
           handler.updateShadeValues(shade);
-          try {
-            const shadeState = await this.hub.getShade(shade.id);
-            handler.updateShadeValues(shadeState);
-          } catch (err) {
-            logError(this.log, `Failed to fetch shade ${shade.id} state:`, err);
+
+          // Only when the list entry carried nothing to work with. /api/shades
+          // already returns positions on hubs that report them, and every hub
+          // call is serialised — so refetching each shade doubled the requests
+          // per poll cycle for no new information.
+          if (!shade.positions) {
+            try {
+              const shadeState = await this.hub.getShade(shade.id);
+              handler.updateShadeValues(shadeState);
+            } catch (err) {
+              logError(this.log, `Failed to fetch shade ${shade.id} state:`, err);
+            }
           }
         }
       } catch (err) {
@@ -393,10 +401,9 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
       }
     }
 
-    for (const shadeId of Object.keys(this.accessories)) {
-      const id = parseInt(shadeId, 10);
+    for (const [id, accessory] of [...this.accessories]) {
       if (!newShades[id]) {
-        this.removeShadeAccessory(this.accessories[id]);
+        this.removeShadeAccessory(accessory);
       }
     }
   }
@@ -439,8 +446,7 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
     }
 
     let refreshed = 0;
-    for (const shadeId of Object.keys(this.accessories)) {
-      const id = parseInt(shadeId, 10);
+    for (const id of [...this.accessories.keys()]) {
       try {
         const { positions } = await this.updateShade(id);
         if (positions && Object.keys(positions).length > 0) {
@@ -497,10 +503,9 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
   private async pollBatteryLevels(): Promise<void> {
     // Logged at info deliberately: this moves physical hardware, so it must be
     // attributable from the default log without enabling debug.
-    this.log.info('Battery poll: refreshing %d shades', Object.keys(this.accessories).length);
+    this.log.info('Battery poll: refreshing %d shades', this.accessories.size);
 
-    for (const shadeId of Object.keys(this.accessories)) {
-      const id = parseInt(shadeId, 10);
+    for (const id of [...this.accessories.keys()]) {
       if (this.batteryRefreshDisabled.has(id)) {
         continue;
       }
@@ -688,7 +693,7 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
       hubValue = Math.round(65535 * value / 100);
       break;
     case HubPosition.VANES: {
-      const accessory = this.accessories[shadeId];
+      const accessory = this.accessories.get(shadeId);
       if (!accessory) {
         // A set can still arrive for an accessory Homebridge removed between
         // HomeKit's read and its write. Without this the throw escapes the
@@ -721,7 +726,7 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
   }
 
   async jogShade(shadeId: number): Promise<Partial<Record<HubPosition, number>> | null> {
-    const accessory = this.accessories[shadeId];
+    const accessory = this.accessories.get(shadeId);
     if (accessory?.context.jogSupported === false) {
       return null;
     }
