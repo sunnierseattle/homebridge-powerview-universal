@@ -111,6 +111,14 @@
         "items": {
           "type": "integer"
         }
+      },
+      "requestIntervalMs": {
+        "title": "Hub request spacing (ms)",
+        "type": "integer",
+        "default": 25,
+        "minimum": 0,
+        "maximum": 1000,
+        "description": "Delay between requests to the hub. The hub answers one at a time, and this spacing sits on top of that. Lower feels faster; raise it if your hub returns errors or truncated responses under load."
       }
     }
   }

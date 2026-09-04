@@ -3,8 +3,18 @@ import type { Logging } from 'homebridge';
 import { HubError, HubErrorCode, formatError, logError } from './errors.js';
 import { parsePositionMap, serializePositionMap } from './shadeUtils.js';
 
-const INITIAL_REQUEST_DELAY_MS = 100;
-const REQUEST_INTERVAL_MS = 100;
+/**
+ * How long a shade request waits before going out, so several sets for one
+ * shade merge into a single PUT. Every ms here is latency on a HomeKit tap.
+ */
+const INITIAL_REQUEST_DELAY_MS = 25;
+/**
+ * Spacing between serialised hub requests. Probed against a gen1 hub on build
+ * 827: 30 serialised reads at 100/50/25/10/0ms produced no bad status, no
+ * malformed JSON and no timeouts, with response times flat at ~70ms. Kept
+ * non-zero for headroom on slower hubs, and overridable via `requestIntervalMs`.
+ */
+const DEFAULT_REQUEST_INTERVAL_MS = 25;
 const MAINTENANCE_RETRY_ATTEMPTS = 3;
 const MAINTENANCE_RETRY_DELAY_MS = 2000;
 /**
@@ -13,6 +23,12 @@ const MAINTENANCE_RETRY_DELAY_MS = 2000;
  * every subsequent request forever.
  */
 const REQUEST_TIMEOUT_MS = 15000;
+
+/** Lower runs first. HomeKit writes must not wait behind background reads. */
+export enum RequestPriority {
+  Write = 0,
+  Read = 1,
+}
 
 export enum HubPosition {
   BOTTOM = 1,
@@ -113,31 +129,77 @@ export class PowerViewHub {
    * ordered shade requests — capability probes and /api/shades listings called
    * fetchJson directly and raced against it.
    */
-  private chain: Promise<unknown> = Promise.resolve();
+  private readonly pending: Array<{
+    priority: RequestPriority;
+    seq: number;
+    run: () => Promise<unknown>;
+    settle: (value: unknown) => void;
+    fail: (err: unknown) => void;
+  }> = [];
+
+  private draining = false;
+  private seq = 0;
+  private readonly requestIntervalMs: number;
 
   constructor(
     private readonly log: Logging,
     private readonly host: string,
-  ) {}
+    requestIntervalMs?: number,
+  ) {
+    this.requestIntervalMs = typeof requestIntervalMs === 'number' && requestIntervalMs >= 0
+      ? requestIntervalMs
+      : DEFAULT_REQUEST_INTERVAL_MS;
+  }
 
   private baseUrl(path: string): string {
     return `http://${this.host}${path}`;
   }
 
-  /** Runs `fn` after all previously serialised work, spaced by REQUEST_INTERVAL_MS. */
-  private serialize<T>(fn: () => Promise<T>): Promise<T> {
-    const run = this.chain.then(async () => {
-      try {
-        return await fn();
-      } finally {
-        await this.delay(REQUEST_INTERVAL_MS);
-      }
+  /**
+   * Runs `fn` once nothing else is in flight, highest priority first and FIFO
+   * within a priority. The hub answers one request at a time, so this is the
+   * single gate every call passes through.
+   */
+  private serialize<T>(fn: () => Promise<T>, priority = RequestPriority.Read): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      this.pending.push({
+        priority,
+        seq: this.seq++,
+        run: fn as () => Promise<unknown>,
+        settle: resolve as (value: unknown) => void,
+        fail: reject,
+      });
+      void this.drain();
     });
-    this.chain = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    return run;
+  }
+
+  private async drain(): Promise<void> {
+    if (this.draining) {
+      return;
+    }
+    this.draining = true;
+    try {
+      while (this.pending.length > 0) {
+        // Re-sorted each pass: a write queued while the previous request was in
+        // flight has to be able to overtake reads already waiting.
+        this.pending.sort((a, b) => a.priority - b.priority || a.seq - b.seq);
+        const task = this.pending.shift();
+        if (!task) {
+          break;
+        }
+        try {
+          task.settle(await task.run());
+        } catch (err) {
+          task.fail(err);
+        }
+        // Only between requests, never after the last one.
+        if (this.pending.length > 0) {
+          await this.delay(this.requestIntervalMs);
+        }
+      }
+    } finally {
+      this.draining = false;
+    }
   }
 
   private async delay(ms: number): Promise<void> {
@@ -181,7 +243,7 @@ export class PowerViewHub {
   async requestJson<T>(
     url: string,
     init?: RequestInit,
-    options?: { retriesOnMaintenance?: boolean },
+    options?: { retriesOnMaintenance?: boolean; priority?: RequestPriority },
   ): Promise<HubResponse<T>> {
     const retries = options?.retriesOnMaintenance !== false
       ? MAINTENANCE_RETRY_ATTEMPTS
@@ -209,7 +271,7 @@ export class PowerViewHub {
             ? await res.json()
             : undefined;
           return { response: res, body: parsed };
-        });
+        }, options?.priority ?? RequestPriority.Read);
 
         const userData = this.extractUserData(body);
 
@@ -278,8 +340,12 @@ export class PowerViewHub {
     throw lastError ?? new HubError(`Request failed for ${url}`, HubErrorCode.HttpError);
   }
 
-  private async fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-    const response = await this.requestJson<T>(url, init);
+  private async fetchJson<T>(
+    url: string,
+    init?: RequestInit,
+    priority?: RequestPriority,
+  ): Promise<T> {
+    const response = await this.requestJson<T>(url, init, { priority });
     if (!response.data) {
       throw new HubError(`Empty response body for ${url}`, HubErrorCode.EmptyBody);
     }
@@ -338,7 +404,12 @@ export class PowerViewHub {
         this.log.debug('Put for %d %s', queued.shadeId, JSON.stringify(queued.data));
       }
 
-      const json = await this.fetchJson<{ shade: PowerViewShade }>(url.toString(), init);
+      const json = await this.fetchJson<{ shade: PowerViewShade }>(
+        url.toString(),
+        init,
+        // A PUT is a HomeKit command; it must not sit behind background reads.
+        init ? RequestPriority.Write : RequestPriority.Read,
+      );
       for (const callback of queued.callbacks) {
         callback(null, json.shade);
       }

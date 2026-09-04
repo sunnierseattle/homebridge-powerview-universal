@@ -107,7 +107,12 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
     const host = typeof config.host === 'string' && config.host.length > 0
       ? config.host
       : 'powerview-hub.local';
-    this.hub = new PowerViewHub(log, host);
+    const requestIntervalMs = typeof config.requestIntervalMs === 'number'
+      && Number.isFinite(config.requestIntervalMs)
+      && config.requestIntervalMs >= 0
+      ? config.requestIntervalMs
+      : undefined;
+    this.hub = new PowerViewHub(log, host, requestIntervalMs);
 
     this.batteryPoll = resolveBatteryPollSettings(config);
     this.quietHours = resolveQuietHours(config);

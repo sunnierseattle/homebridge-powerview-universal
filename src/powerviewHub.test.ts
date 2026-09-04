@@ -311,3 +311,53 @@ describe('PowerViewHub shade request coalescing', () => {
     });
   });
 });
+
+describe('PowerViewHub request priority', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('lets a write overtake reads already waiting in the queue', async () => {
+    vi.useFakeTimers();
+
+    const order: string[] = [];
+    let releaseFirst: (() => void) | undefined;
+
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      const label = init?.method === 'PUT' ? 'write' : `read:${/(\d+)$/.exec(url)?.[1] ?? '?'}`;
+      order.push(label);
+      const body = { shade: { id: 1, name: 'U2hhZGU=' } };
+      const respond = () => ({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        json: async () => body,
+      });
+      if (order.length === 1) {
+        // Hold the first request open so the rest pile up behind it.
+        return new Promise((resolve) => {
+          releaseFirst = () => resolve(respond());
+        });
+      }
+      return Promise.resolve(respond());
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = hub();
+    const first = client.getShade(1);
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Both queue while the first request is still in flight. HomeKit's write
+    // must not wait behind a background read.
+    const queuedRead = client.getShade(2);
+    const write = client.putShade(3, HubPosition.BOTTOM, 49151, 75);
+    await vi.advanceTimersByTimeAsync(200);
+
+    releaseFirst?.();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await Promise.all([first, queuedRead, write]);
+
+    expect(order).toEqual(['read:1', 'write', 'read:2']);
+  });
+});
