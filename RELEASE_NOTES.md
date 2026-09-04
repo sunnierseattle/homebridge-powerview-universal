@@ -38,7 +38,60 @@ User-facing notes for **homebridge-powerview-universal** releases. Use this file
 
 ---
 
-## Latest: 3.1.2 (2026-05-18)
+## Latest: 3.2.0 (2026-09-04)
+
+First release under the name **homebridge-powerview-universal**.
+
+### Highlights
+
+- **Your shades stop waking up at night.** Battery polling was an RF round-trip that spins the
+  motor, ran every 6 hours from plugin start, and had no off switch — so a poll always landed
+  overnight. It is now off by default, and opt-in polling runs once a day at a time you choose.
+- **Positions are correct on a cold start.** Last known positions survive a restart, so shades no
+  longer show as "fully closed" in the Home app while the first refresh is still in flight.
+- **The Home app stops timing out.** Position reads answer instantly from cache and refresh in the
+  background, instead of blocking on a hub round-trip that HomeKit gives up on.
+- **Battery percentages above 90% are real numbers now**, and 20 more shade types are driven from
+  the capabilities the hub reports rather than assumed to be rollers.
+
+### Added
+
+- `batteryPolling` (default `false`) and `batteryPollAt` (default `14:00`) — opt in to a daily
+  battery measurement at a time that suits you.
+- `syncPositionsOnStart` (default `true`) and `quietHours` (default 21:00–08:00) — re-sync unknown
+  positions at startup, but never inside the quiet window.
+- An ISC `LICENSE` file.
+
+### Changed
+
+- Shade behaviour comes from the hub's `capabilities` field, falling back to the documented
+  26-type table. Types the plugin cannot yet drive correctly now warn once per shade instead of
+  silently reporting a wrong position or tilt.
+- Logs are much quieter: positions are logged only when they change, and the "invalid position"
+  and low-battery warnings no longer fire on the happy path.
+
+### Fixed
+
+- **Hold** now stops a moving shade instead of jogging it.
+- Battery percentage is read as pack voltage, not as a percentage — previously anything above 100
+  collapsed to one of four values, so 67% and 98% both showed as 90%.
+- Hub requests time out after 15s instead of hanging forever, and every request is serialised, so
+  the hub no longer returns truncated JSON when calls overlap.
+- Shades that the hub has never polled no longer raise a false low-battery warning.
+
+### Notes
+
+- Requires Homebridge **1.8+** or **2.x** and Node **22** or **24**.
+- **Uninstall `homebridge-powerview-3` before installing this package.** Homebridge migrates your
+  cached shades to the new name automatically, but only if one plugin claims the `PowerView`
+  platform name — with both installed, the cached accessories are dropped and your shades come
+  back as new tiles.
+- Your `config.json` needs no changes; all new options have defaults.
+- PowerView **scenes** are probed at startup but still not exposed as HomeKit accessories.
+
+---
+
+## 3.1.2 (2026-05-18)
 
 ### Highlights
 
