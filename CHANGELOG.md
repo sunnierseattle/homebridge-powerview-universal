@@ -2,6 +2,32 @@
 
 All notable changes to this project are documented in this file.
 
+## [4.1.0] - 2026-09-04
+
+### Added
+
+- `requestIntervalMs` (default `25`), exposed in the Homebridge UI schema. Spacing between
+  serialised hub requests, so a hub that struggles under load can be given more room without a
+  code change.
+
+### Changed
+
+- **HomeKit writes now overtake background reads.** The request queue was strictly FIFO, so a
+  shade command issued while a refresh was in flight waited for that refresh and for every read
+  queued ahead of it. Writes now run first, FIFO within a priority, still one request at a time
+  because the hub cannot do better.
+- **Request spacing drops from 100ms to 25ms.** Measured, not guessed: 30 serialised reads
+  against a gen1 hub on build 827 at 100/50/25/10/0ms spacing returned 30/30 valid responses in
+  every condition — no bad status, no malformed JSON, no timeouts — with response times flat at
+  ~70ms. 25ms keeps headroom rather than removing the guard.
+- The spacing delay no longer runs after the final request, only between requests.
+
+### Notes
+
+- This takes roughly 375ms off a five-shade group move, but does not make shades move in unison.
+  Five sequential round-trips are ~350ms of irreducible spread. Only a hub scene, which is one
+  call the hub expands itself, can move a group together — scene support is not implemented yet.
+
 ## [4.0.0] - 2026-09-04
 
 First release under the name **homebridge-powerview-universal**. Consolidates the

@@ -38,7 +38,30 @@ User-facing notes for **homebridge-powerview-universal** releases. Use this file
 
 ---
 
-## Latest: 4.0.0 (2026-09-04)
+## Latest: 4.1.0 (2026-09-04)
+
+Responsiveness work on top of 4.0.0.
+
+### Highlights
+
+- **Shades react faster to a tap.** Commands from the Home app now jump ahead of background
+  refreshes instead of queuing behind them, and the delay between hub requests drops from 100ms
+  to 25ms — about 375ms off closing five shades.
+
+### Added
+
+- `requestIntervalMs` (default `25`) — raise it if your hub misbehaves under load.
+
+### Notes
+
+- This does **not** make shades move in unison. The hub takes one command per shade, so five
+  shades means five round-trips and roughly 350ms of unavoidable spread. A remote looks
+  synchronised because it broadcasts to all the motors at once over RF. Matching that through the
+  hub needs scene support, which is not implemented yet.
+
+---
+
+## 4.0.0 (2026-09-04)
 
 First release under the name **homebridge-powerview-universal**. A major version
 because the package is renamed — this does not upgrade in place.
