@@ -83,6 +83,26 @@ export interface HubResponse<T> {
   userData?: HubUserData;
 }
 
+/**
+ * Settles a shade promise from the queue's callback signature. Every queued
+ * shade request resolves the same three ways, and the shape was repeated at
+ * each of the six call sites.
+ */
+function settleShade(
+  resolve: (shade: PowerViewShade) => void,
+  reject: (err: Error) => void,
+): (err: Error | null, shade?: PowerViewShade) => void {
+  return (err, shade) => {
+    if (err) {
+      reject(err);
+    } else if (shade) {
+      resolve(shade);
+    } else {
+      reject(new HubError('No shade data returned', HubErrorCode.EmptyBody));
+    }
+  };
+}
+
 export class PowerViewHub {
   private readonly queue: QueuedRequest[] = [];
 
@@ -427,15 +447,7 @@ export class PowerViewHub {
         if (queued.shadeId === shadeId && queued.qs) {
           const sameQs = Object.keys(qs).every((k) => queued.qs?.[k] === qs[k]);
           if (sameQs) {
-            queued.callbacks.push((err, shade) => {
-              if (err) {
-                reject(err);
-              } else if (shade) {
-                resolve(shade);
-              } else {
-                reject(new HubError('No shade data returned', HubErrorCode.EmptyBody));
-              }
-            });
+            queued.callbacks.push(settleShade(resolve, reject));
             return;
           }
         }
@@ -444,15 +456,7 @@ export class PowerViewHub {
       this.queueRequest({
         shadeId,
         qs,
-        callbacks: [(err, shade) => {
-          if (err) {
-            reject(err);
-          } else if (shade) {
-            resolve(shade);
-          } else {
-            reject(new HubError('No shade data returned', HubErrorCode.EmptyBody));
-          }
-        }],
+        callbacks: [settleShade(resolve, reject)],
       });
     });
   }
@@ -482,15 +486,7 @@ export class PowerViewHub {
 
           queued.data.positions = serializePositionMap(positions as Record<number, number>);
 
-          queued.callbacks.push((err, shade) => {
-            if (err) {
-              reject(err);
-            } else if (shade) {
-              resolve(shade);
-            } else {
-              reject(new HubError('No shade data returned', HubErrorCode.EmptyBody));
-            }
-          });
+          queued.callbacks.push(settleShade(resolve, reject));
           return;
         }
       }
@@ -500,15 +496,7 @@ export class PowerViewHub {
         data: {
           positions: serializePositionMap({ [position]: value }),
         },
-        callbacks: [(err, shade) => {
-          if (err) {
-            reject(err);
-          } else if (shade) {
-            resolve(shade);
-          } else {
-            reject(new HubError('No shade data returned', HubErrorCode.EmptyBody));
-          }
-        }],
+        callbacks: [settleShade(resolve, reject)],
       });
     });
   }
@@ -526,15 +514,7 @@ export class PowerViewHub {
     return new Promise((resolve, reject) => {
       for (const queued of this.queue) {
         if (queued.shadeId === shadeId && queued.data?.motion === motion) {
-          queued.callbacks.push((err, shade) => {
-            if (err) {
-              reject(err);
-            } else if (shade) {
-              resolve(shade);
-            } else {
-              reject(new HubError('No shade data returned', HubErrorCode.EmptyBody));
-            }
-          });
+          queued.callbacks.push(settleShade(resolve, reject));
           return;
         }
       }
@@ -542,15 +522,7 @@ export class PowerViewHub {
       this.queueRequest({
         shadeId,
         data: { motion },
-        callbacks: [(err, shade) => {
-          if (err) {
-            reject(err);
-          } else if (shade) {
-            resolve(shade);
-          } else {
-            reject(new HubError('No shade data returned', HubErrorCode.EmptyBody));
-          }
-        }],
+        callbacks: [settleShade(resolve, reject)],
       });
     });
   }

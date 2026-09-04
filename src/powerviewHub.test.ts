@@ -2,7 +2,7 @@ import type { Logging } from 'homebridge';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { HubErrorCode, isHubError } from './errors.js';
-import { PowerViewHub } from './powerviewHub.js';
+import { HubPosition, PowerViewHub } from './powerviewHub.js';
 
 const log = {
   debug: vi.fn(),
@@ -252,5 +252,62 @@ describe('PowerViewHub request serialisation', () => {
       'body-start:http://127.0.0.1/second',
       'body-end:http://127.0.0.1/second',
     ]);
+  });
+});
+
+describe('PowerViewHub shade request coalescing', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  function shadeFetch() {
+    const fetchMock = vi.fn(() => Promise.resolve({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({ shade: { id: 1, name: 'U2hhZGU=' } }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  it('serves two identical battery reads from one hub request', async () => {
+    vi.useFakeTimers();
+    const fetchMock = shadeFetch();
+    const client = hub();
+
+    const both = Promise.all([
+      client.getShade(1, { updateBatteryLevel: true }),
+      client.getShade(1, { updateBatteryLevel: true }),
+    ]);
+    await vi.advanceTimersByTimeAsync(5_000);
+    const [first, second] = await both;
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(first.id).toBe(1);
+    expect(second.id).toBe(1);
+  });
+
+  it('merges pending writes for one shade into a single PUT', async () => {
+    vi.useFakeTimers();
+    const fetchMock = shadeFetch();
+    const client = hub();
+
+    // HomeKit sends position and tilt as separate sets; the hub takes one
+    // combined positions object.
+    const both = Promise.all([
+      client.putShade(1, HubPosition.BOTTOM, 49151, 75),
+      client.putShade(1, HubPosition.VANES, 16383, 45),
+    ]);
+    await vi.advanceTimersByTimeAsync(5_000);
+    await both;
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(String(init.body))).toEqual({
+      shade: { positions: { posKind1: 3, position1: 16383 } },
+    });
   });
 });
