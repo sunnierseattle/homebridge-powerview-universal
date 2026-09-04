@@ -38,9 +38,10 @@ User-facing notes for **homebridge-powerview-universal** releases. Use this file
 
 ---
 
-## Latest: 3.2.0 (2026-09-04)
+## Latest: 4.0.0 (2026-09-04)
 
-First release under the name **homebridge-powerview-universal**.
+First release under the name **homebridge-powerview-universal**. A major version
+because the package is renamed — this does not upgrade in place.
 
 ### Highlights
 
@@ -72,11 +73,17 @@ First release under the name **homebridge-powerview-universal**.
 
 ### Fixed
 
+- **Tilting a blind no longer makes it report as fully closed.** Whenever the hub sent a tilt
+  value, the shade's position was overwritten with 0 in the same update.
+- **Restarting Homebridge no longer shows every shade as fully closed** until the first refresh
+  lands.
 - **Hold** now stops a moving shade instead of jogging it.
 - Battery percentage is read as pack voltage, not as a percentage — previously anything above 100
   collapsed to one of four values, so 67% and 98% both showed as 90%.
-- Hub requests time out after 15s instead of hanging forever, and every request is serialised, so
-  the hub no longer returns truncated JSON when calls overlap.
+- Hub requests time out after 15s instead of hanging forever, and every request is fully
+  serialised — including reading the response body, which previously still overlapped the next
+  request and left the hub returning truncated JSON.
+- A poll now costs half the hub requests it used to.
 - Shades that the hub has never polled no longer raise a false low-battery warning.
 
 ### Notes

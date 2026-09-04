@@ -2,11 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
-## [3.2.0] - 2026-09-04
+## [4.0.0] - 2026-09-04
 
 First release under the name **homebridge-powerview-universal**. Consolidates the
 `3.1.4-local.1` … `3.1.4-local.8` working versions, none of which were published.
-All behaviour below was verified against a PowerView hub on firmware build 827.
+All hub behaviour below was verified against a PowerView hub on firmware build 827.
+
+Major rather than minor: the npm package is renamed, so this does not upgrade in
+place — the old package must be uninstalled and this one installed. `PLUGIN_NAME`
+changes with it, which migrates the cached accessories. Battery polling also
+changes from on-by-default to off-by-default.
 
 ### Added
 
@@ -55,11 +60,39 @@ All behaviour below was verified against a PowerView hub on firmware build 827.
 - Errors preserve the underlying failure as `cause`, and timeouts are distinguished from
   unreachable hosts instead of every failure reporting as Unreachable.
 - `PositionMap` is defined once in `shadeUtils.ts` instead of being redeclared in `platform.ts`.
+- **A poll costs half the hub requests it did.** `/api/shades` already returns each shade, but the
+  loop then called `getShade(id)` for every one, so N shades meant 2N serialised requests per
+  cycle. The per-shade fetch now runs only when the list entry carried no positions.
 - Package renamed to `homebridge-powerview-universal`; repository, bugs, and homepage links now
   point at this fork rather than upstream's tracker.
 
 ### Fixed
 
+- **Hub requests still overlapped after being serialised.** `serialize()` wrapped only the
+  `fetch()` call, and `fetch()` settles when response headers arrive, not when the body is
+  consumed — so `response.json()` ran after the chain had already advanced, streaming one
+  request's body while the next request was already in flight. That is the overlap that makes a
+  legacy hub time out and return truncated JSON. The body is now read inside the serialised
+  section.
+- **A tilt report no longer forces the shade to read as fully closed.** Both vanes branches
+  called `applyCoveringPosition(service, 0)`, so `posKind1` set the real position and `posKind2`
+  immediately overwrote it with 0 in the same loop. Every tilt-capable shade reported itself
+  closed while the cache held the true value.
+- **Restarts no longer report a shade as fully closed.** `configure()` seeded `CurrentPosition`
+  to 0 unconditionally, running on every restart immediately after the cache was restored — so
+  the persisted position was overwritten before HomeKit could read it. It now seeds from the
+  cache for both rails.
+- **The shade poll no longer survives shutdown.** Its `setTimeout` handle was never stored, so
+  the shutdown listener could not clear it; with `pollShadesForUpdate` enabled, shutdown left a
+  30s loop hitting the hub and holding the event loop open.
+- **A position set for a removed shade reports an error instead of crashing.** `setPosition` read
+  `this.accessories[shadeId].context` unguarded, before its `try`, so the throw escaped the
+  HomeKit handler as an unhandled rejection.
+- **Every reported position kind is read.** The loop terminated at the first absent `posKind` and
+  silently dropped every kind after a gap.
+- **An unusable position value is skipped rather than cached as `NaN`.** HAP rejected the
+  characteristic write, but the `NaN` still reached the position map, where it defeats
+  `positionMapsEqual` — `NaN !== NaN` — so every subsequent read rewrote the accessory cache file.
 - **Requests could hang forever.** Node's `fetch` has no default timeout and the hub serialises
   every call through one queue, so a half-open socket stalled all later requests indefinitely.
   Every hub request now carries a 15s `AbortController` timeout.
