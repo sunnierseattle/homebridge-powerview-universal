@@ -7,16 +7,26 @@ import { parsePositionMap, serializePositionMap } from './shadeUtils.js';
  * How long a shade request waits before going out, so several sets for one
  * shade merge into a single PUT. Every ms here is latency on a HomeKit tap.
  */
-const INITIAL_REQUEST_DELAY_MS = 25;
+const INITIAL_REQUEST_DELAY_MS = 100;
 /**
- * Spacing between serialised hub requests. Probed against a gen1 hub on build
- * 827: 30 serialised reads at 100/50/25/10/0ms produced no bad status, no
- * malformed JSON and no timeouts, with response times flat at ~70ms. Kept
- * non-zero for headroom on slower hubs, and overridable via `requestIntervalMs`.
+ * Spacing between serialised hub requests.
+ *
+ * Briefly lowered to 25ms on the strength of a read-only probe, then restored:
+ * cached reads never engage the hub's radio, but a PUT does, and a gen1 hub
+ * drops TCP connections while transmitting. In use that lost two of five shades
+ * in a group move. Overridable via `requestIntervalMs` for anyone who wants to
+ * retune it against their own hub, with writes included this time.
  */
-const DEFAULT_REQUEST_INTERVAL_MS = 25;
+const DEFAULT_REQUEST_INTERVAL_MS = 100;
 const MAINTENANCE_RETRY_ATTEMPTS = 3;
 const MAINTENANCE_RETRY_DELAY_MS = 2000;
+/**
+ * A gen1 hub drops TCP connections while its radio is busy, which surfaces as a
+ * bare `fetch failed`. Losing the request means the shade never moves, so a
+ * transient network failure is retried rather than reported.
+ */
+const NETWORK_RETRY_ATTEMPTS = 3;
+const NETWORK_RETRY_DELAY_MS = 500;
 /**
  * Hard ceiling on any single hub request. Node's fetch has no default timeout, and
  * the hub serialises every call through one queue — a half-open socket would stall
@@ -246,7 +256,7 @@ export class PowerViewHub {
     options?: { retriesOnMaintenance?: boolean; priority?: RequestPriority },
   ): Promise<HubResponse<T>> {
     const retries = options?.retriesOnMaintenance !== false
-      ? MAINTENANCE_RETRY_ATTEMPTS
+      ? Math.max(MAINTENANCE_RETRY_ATTEMPTS, NETWORK_RETRY_ATTEMPTS)
       : 1;
 
     let lastError: HubError | undefined;
@@ -323,13 +333,23 @@ export class PowerViewHub {
           );
         }
         const detail = err instanceof Error ? err.message : String(err);
-        throw new HubError(
+        const unreachable = new HubError(
           `Failed to reach PowerView hub at ${this.host} (${url}): ${detail}`,
           HubErrorCode.Unreachable,
           undefined,
           undefined,
           { cause: err },
         );
+        if (attempt < Math.min(retries, NETWORK_RETRY_ATTEMPTS) - 1) {
+          lastError = unreachable;
+          this.log.debug(
+            'Hub connection dropped (%s), retrying in %dms (attempt %d/%d)',
+            detail, NETWORK_RETRY_DELAY_MS, attempt + 1, NETWORK_RETRY_ATTEMPTS,
+          );
+          await this.delay(NETWORK_RETRY_DELAY_MS);
+          continue;
+        }
+        throw unreachable;
       } finally {
         if (timer !== undefined) {
           clearTimeout(timer);

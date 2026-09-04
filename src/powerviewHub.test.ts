@@ -361,3 +361,45 @@ describe('PowerViewHub request priority', () => {
     expect(order).toEqual(['read:1', 'write', 'read:2']);
   });
 });
+
+describe('PowerViewHub transient failures', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('retries a dropped connection instead of losing the command', async () => {
+    vi.useFakeTimers();
+    // A gen1 hub drops TCP connections while its radio is transmitting. Losing
+    // the request means the shade never moves at all.
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        json: async () => ({ shade: { id: 1, name: 'U2hhZGU=' } }),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const request = hub().putShade(1, HubPosition.BOTTOM, 49151, 75);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await expect(request).resolves.toMatchObject({ id: 1 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('gives up after exhausting retries', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const request = hub().requestJson('http://127.0.0.1/api/shades/1');
+    const assertion = expect(request).rejects.toSatisfy(
+      (err: unknown) => isHubError(err) && err.code === HubErrorCode.Unreachable,
+    );
+    await vi.advanceTimersByTimeAsync(30_000);
+    await assertion;
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(1);
+  });
+});

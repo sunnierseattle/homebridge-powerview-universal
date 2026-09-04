@@ -38,7 +38,25 @@ User-facing notes for **homebridge-powerview-universal** releases. Use this file
 
 ---
 
-## Latest: 4.1.0 (2026-09-04)
+## Latest: 4.1.1 (2026-09-04)
+
+Fixes a regression in 4.1.0.
+
+### Highlights
+
+- **Shades no longer drop out of a group move.** 4.1.0 tightened the gap between hub requests to
+  25ms, which a gen1 hub cannot take while its radio is transmitting — it drops the connection,
+  and the command was then lost rather than retried. Setting five shades at once could move only
+  three. The spacing is back to 100ms, and a dropped connection is now retried.
+
+### Notes
+
+- `requestIntervalMs` remains configurable. If you retune it, test it with shades actually
+  moving; cached reads will not reveal the problem.
+
+---
+
+## 4.1.0 (2026-09-04)
 
 Responsiveness work on top of 4.0.0.
 

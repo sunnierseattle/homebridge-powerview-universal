@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented in this file.
 
+## [4.1.1] - 2026-09-04
+
+### Fixed
+
+- **A dropped connection no longer loses the command outright.** Only HTTP 423 was retried, so a
+  bare `fetch failed` — which is what a gen1 hub gives you when it drops a TCP connection while
+  its radio is transmitting — threw immediately and the shade never moved. Transient network
+  failures now retry three times, 500ms apart.
+
+### Changed
+
+- **`requestIntervalMs` returns to a 100ms default**, reverting the 25ms introduced in 4.1.0. The
+  probe behind that number ran cached reads, which never engage the hub's radio; writes do. In
+  practice a five-shade group move at 25ms lost two shades to dropped connections. The option
+  stays, so the spacing can still be retuned — against writes, not just reads.
+
 ## [4.1.0] - 2026-09-04
 
 ### Added
