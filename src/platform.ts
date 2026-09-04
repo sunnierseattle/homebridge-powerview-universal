@@ -89,6 +89,8 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
   private readonly batteryRefreshDisabled = new Set<number>();
   private readonly posKindErrorLogged = new Set<number>();
   private batteryPollTimer?: ReturnType<typeof setTimeout>;
+  private shadePollTimer?: ReturnType<typeof setTimeout>;
+  private shuttingDown = false;
 
   constructor(
     public readonly log: Logging,
@@ -124,9 +126,17 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
     });
 
     this.api.on('shutdown', () => {
+      // The flag matters as much as the timers: updateShades() may be in
+      // flight, and its finally block would otherwise schedule the next poll
+      // after shutdown has already cleared the handle.
+      this.shuttingDown = true;
       if (this.batteryPollTimer) {
         clearTimeout(this.batteryPollTimer);
         this.batteryPollTimer = undefined;
+      }
+      if (this.shadePollTimer) {
+        clearTimeout(this.shadePollTimer);
+        this.shadePollTimer = undefined;
       }
     });
   }
@@ -392,12 +402,18 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
   }
 
   private pollShades(): void {
+    if (this.shuttingDown) {
+      return;
+    }
     void this.updateShades()
       .catch((err) => {
         logError(this.log, 'Failed to poll shades from hub:', err);
       })
       .finally(() => {
-        setTimeout(() => this.pollShades(), SHADE_POLL_INTERVAL_MS);
+        if (this.shuttingDown) {
+          return;
+        }
+        this.shadePollTimer = setTimeout(() => this.pollShades(), SHADE_POLL_INTERVAL_MS);
       });
   }
 
@@ -673,6 +689,13 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
       break;
     case HubPosition.VANES: {
       const accessory = this.accessories[shadeId];
+      if (!accessory) {
+        // A set can still arrive for an accessory Homebridge removed between
+        // HomeKit's read and its write. Without this the throw escapes the
+        // handler as an unhandled rejection, since it precedes the try below.
+        callback(new Error(`Unknown shade: ${shadeId}`));
+        return;
+      }
       if (accessory.context.shadeType === ShadeKind.VERTICAL) {
         hubValue = Math.abs(Math.round(65535 * (value - 90) / 180));
       } else {
