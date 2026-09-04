@@ -90,6 +90,12 @@ export type PositionMap = Partial<Record<HubPosition, number>>;
 /** API PositionKind value when the hub reports a position error. */
 export const POSITION_KIND_ERROR = 4;
 
+/**
+ * How many posKindN/positionN pairs a shade response may carry. The hub uses
+ * two in practice; the loop is bounded rather than stopping at the first gap.
+ */
+export const MAX_POSITION_KINDS = 4;
+
 export function isValidPositionKind(kind: number): boolean {
   return kind >= HubPosition.BOTTOM && kind <= HubPosition.VANES;
 }

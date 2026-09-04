@@ -8,6 +8,7 @@ import type {
 import { HubPosition, type PowerViewShade } from './powerviewHub.js';
 import type { PowerViewPlatform } from './platform.js';
 import {
+  MAX_POSITION_KINDS,
   POSITION_KIND_ERROR,
   decodeBase64Name,
   formatShadeFirmware,
@@ -155,7 +156,12 @@ export class PowerViewPlatformAccessory {
       : undefined;
 
     const service = this.ensureWindowCoveringService(SUBTYPE.BOTTOM);
-    this.applyCoveringPosition(service, 0);
+    // Seed from the restored cache. Slamming this to 0 would undo the whole
+    // point of persisting positions: HomeKit renders 0 as "fully closed".
+    this.applyCoveringPosition(
+      service,
+      this.platform.getCachedPosition(shadeId, HubPosition.BOTTOM) ?? 0,
+    );
 
     service
       .getCharacteristic(this.Characteristic.CurrentPosition)
@@ -219,7 +225,10 @@ export class PowerViewPlatformAccessory {
       } else if (topDisplayName) {
         topService.setCharacteristic(this.Characteristic.Name, topDisplayName);
       }
-      this.applyCoveringPosition(topService, 0);
+      this.applyCoveringPosition(
+        topService,
+        this.platform.getCachedPosition(shadeId, HubPosition.TOP) ?? 0,
+      );
 
       topService
         .getCharacteristic(this.Characteristic.CurrentPosition)
@@ -364,12 +373,27 @@ export class PowerViewPlatformAccessory {
       this.log.info('Shade %d reported positions %s', shade.id, serialised);
     }
 
-    for (let i = 1; shade.positions[`posKind${i}`] != null; ++i) {
+    // Bounded rather than stopping at the first gap: the old loop broke on a
+    // missing posKind and silently dropped every kind after it.
+    for (let i = 1; i <= MAX_POSITION_KINDS; ++i) {
       const position = shade.positions[`posKind${i}`];
-      const hubValue = shade.positions[`position${i}`];
+      if (position == null) {
+        continue;
+      }
 
       if (position === POSITION_KIND_ERROR) {
         this.platform.warnPositionKindErrorOnce(shade.id);
+        continue;
+      }
+
+      const hubValue = shade.positions[`position${i}`];
+      if (typeof hubValue !== 'number' || !Number.isFinite(hubValue)) {
+        // A NaN here would reach the position map, where it defeats
+        // positionMapsEqual (NaN !== NaN) and rewrites the cache on every read.
+        this.log.warn(
+          'Shade %d reported position kind %d with no usable value (%s)',
+          shade.id, position, String(hubValue),
+        );
         continue;
       }
 
@@ -408,7 +432,9 @@ export class PowerViewPlatformAccessory {
           continue;
         }
 
-        this.applyCoveringPosition(service, 0);
+        // The covering position is not touched here. Forcing it to 0 clobbered
+        // whatever the BOTTOM kind set earlier in this same loop, so a tilted
+        // shade reported itself fully closed while the cache held the truth.
 
         if (current && !Number.isNaN(positions[HubPosition.VANES])) {
           service.setCharacteristic(
@@ -430,8 +456,6 @@ export class PowerViewPlatformAccessory {
         if (!service) {
           continue;
         }
-
-        this.applyCoveringPosition(service, 0);
 
         if (current) {
           service.setCharacteristic(
