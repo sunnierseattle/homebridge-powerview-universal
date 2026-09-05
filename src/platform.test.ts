@@ -21,7 +21,7 @@ function jsonResponse(body: unknown) {
 
 /** Answers every hub endpoint the platform touches during startup. */
 function stubHub(shades: Array<Record<string, unknown>> = []) {
-  const fetchMock = vi.fn((url: string) => {
+  const fetchMock = vi.fn((url: string, init?: RequestInit) => {
     if (url.includes('/api/userdata')) {
       return Promise.resolve(jsonResponse({
         userData: { hubName: 'SHVi', serialNumber: 'abc', firmware: { mainProcessor: { name: 'PowerView Hub', revision: 2, subRevision: 0, build: 827 } } },
@@ -29,7 +29,18 @@ function stubHub(shades: Array<Record<string, unknown>> = []) {
     }
     if (/\/api\/shades\/\d+/.test(url)) {
       const id = Number(/\/api\/shades\/(\d+)/.exec(url)?.[1]);
-      return Promise.resolve(jsonResponse({ shade: shades.find((s) => s.id === id) ?? { id } }));
+      const shade = shades.find((s) => s.id === id) ?? { id };
+      // A real hub echoes the commanded positions back in its PUT reply. The
+      // plugin's default path relies on that, so the double has to do it too.
+      const body = init?.body ? JSON.parse(String(init.body)) as {
+        shade?: { positions?: Record<string, number> };
+      } : undefined;
+      if (init?.method === 'PUT' && body?.shade?.positions) {
+        return Promise.resolve(jsonResponse({
+          shade: { ...shade, positions: body.shade.positions },
+        }));
+      }
+      return Promise.resolve(jsonResponse({ shade }));
     }
     if (url.includes('/api/shades')) {
       return Promise.resolve(jsonResponse({ shadeData: shades, shadeIds: shades.map((s) => s.id) }));
@@ -396,9 +407,9 @@ describe('PowerViewPlatform movement reporting', () => {
 
   const AT_ZERO = { id: 1, name: 'U2hhZGU=', type: 1, positions: { posKind1: 1, position1: 0 } };
 
-  async function ready() {
+  async function ready(cfg = config({ reportTravel: true })) {
     const fetchMock = stubHub([AT_ZERO]);
-    const platform = new PowerViewPlatform(harness.log, config(), harness.api);
+    const platform = new PowerViewPlatform(harness.log, cfg, harness.api);
     const done = platform.updateShades();
     await vi.advanceTimersByTimeAsync(5_000);
     await done;
@@ -417,7 +428,21 @@ describe('PowerViewPlatform movement reporting', () => {
   const target = (s: Service) => s.getCharacteristic(Characteristic.TargetPosition).value;
   const state = (s: Service) => s.getCharacteristic(Characteristic.PositionState).value;
 
-  it('reports the shade as moving, not already arrived', async () => {
+  it('reports the commanded position immediately by default', async () => {
+    const { platform, service } = await ready(config());
+
+    const done = platform.setPosition(1, 1 /* BOTTOM */, 80, vi.fn());
+    await vi.advanceTimersByTimeAsync(1_000);
+    await done;
+
+    // Default is the responsive tile: the number moves the moment you tap it,
+    // at the cost of being ahead of the shade while it travels.
+    expect(current(service)).toBe(80);
+    expect(target(service)).toBe(80);
+    expect(state(service)).toBe(Characteristic.PositionState.STOPPED);
+  });
+
+  it('reports the shade as moving when reportTravel is on', async () => {
     const { platform, service } = await ready();
 
     const done = platform.setPosition(1, 1 /* BOTTOM */, 80, vi.fn());

@@ -80,6 +80,7 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
   private readonly quietHours: QuietHours;
   private readonly syncPositionsOnStart: boolean;
   private readonly exposeScenes: boolean;
+  private readonly reportTravel: boolean;
   private readonly refreshShades: boolean;
   private readonly pollShadesForUpdate: boolean;
   private readonly strictErrors: boolean;
@@ -137,6 +138,7 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
     this.quietHours = resolveQuietHours(config);
     this.syncPositionsOnStart = config.syncPositionsOnStart !== false;
     this.exposeScenes = config.exposeScenes !== false;
+    this.reportTravel = config.reportTravel === true;
     this.refreshShades = config.refreshShades === true;
     this.pollShadesForUpdate = config.pollShadesForUpdate === true;
     this.strictErrors = config.strictErrors === true;
@@ -830,13 +832,21 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
       const handler = this.handlers.get(shadeId);
       const from = this.getCachedPosition(shadeId, position) ?? 0;
 
-      await this.hub.putShade(shadeId, position, hubValue, value);
+      const shade = await this.hub.putShade(shadeId, position, hubValue, value);
 
-      // Deliberately not feeding the hub's response into CurrentPosition. Its
-      // PUT reply echoes the target, so doing that reported arrival the instant
-      // the command was sent while the motor still had seconds to run.
-      handler?.reportMovement(position, from, value);
-      this.scheduleArrival(shadeId, position, from, value);
+      if (this.reportTravel) {
+        // Truer: the hub's PUT reply only echoes the target, so feeding it into
+        // CurrentPosition claims arrival while the motor is still running.
+        handler?.reportMovement(position, from, value);
+        this.scheduleArrival(shadeId, position, from, value);
+      } else {
+        // Default: report the commanded position at once, so the tile responds
+        // when tapped. It is ahead of the shade for the length of the travel,
+        // and a move that never physically happens goes unnoticed until
+        // something refreshes that shade.
+        const positions = handler?.updateShadeValues(shade, true) ?? null;
+        this.cachePositions(shadeId, positions);
+      }
       callback(null);
     } catch (err) {
       logError(this.log, `setPosition failed for shade ${shadeId}/${position}:`, err);

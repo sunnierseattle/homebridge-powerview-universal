@@ -125,6 +125,12 @@
         "type": "boolean",
         "default": true,
         "description": "Publish each PowerView scene as a HomeKit switch. Activating one is a single hub call that moves the whole group together, which individual shade commands cannot match. Nothing appears if you have no scenes defined in the PowerView app."
+      },
+      "reportTravel": {
+        "title": "Animate shade travel in HomeKit",
+        "type": "boolean",
+        "default": false,
+        "description": "Off by default: the tile shows the position you asked for as soon as you tap, which is responsive but is ahead of the shade while it moves. Turn on to keep the tile on the real position and show opening/closing during travel \u2014 truer, but the number does not change for several seconds."
       }
     }
   }

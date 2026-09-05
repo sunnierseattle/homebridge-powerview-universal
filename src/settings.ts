@@ -97,6 +97,12 @@ export interface PowerViewPlatformConfig extends PlatformConfig {
   strictErrors?: boolean;
   /** Spacing between serialised hub requests, ms. Raise it if your hub struggles. */
   requestIntervalMs?: number;
+  /**
+   * Animate the shade's travel in HomeKit instead of reporting the commanded
+   * position straight away. Truer while a shade is moving, but the tile does not
+   * change for the length of the travel, which reads as unresponsive.
+   */
+  reportTravel?: boolean;
   /** Expose hub scenes as HomeKit switches. Nothing appears if none are defined. */
   exposeScenes?: boolean;
   /** Opt in to the daily battery poll. Off by default: it wakes the shade motor. */

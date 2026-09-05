@@ -2,6 +2,28 @@
 
 All notable changes to this project are documented in this file.
 
+## [4.5.0] - 2026-09-05
+
+### Changed
+
+- **A shade reports the commanded position as soon as you tap it, again.** 4.3.0 made the tile
+  hold the shade's real position and animate `INCREASING`/`DECREASING` through an estimated
+  travel. That is truer, but the number does not move for up to 16 seconds and reads as
+  unresponsive. The responsive behaviour is the default once more.
+- The travel animation is kept behind **`reportTravel`** (default `false`). It is the honest
+  option, and the one to turn on if a shade failing to move silently is worse for you than a tile
+  that runs ahead of it.
+- Setting a position logs the hub's reply again, restoring the completion line that 4.3.0 removed.
+
+### Notes
+
+- With `reportTravel` off, a move that never physically happens — obstruction, flat battery, RF
+  never landing — is not noticed until something refreshes that shade, because the position
+  reported to HomeKit comes from the hub echoing the command rather than from a measurement.
+- Timing was compared against the original 3.1.3 for a five-shade set: the dispatch path is
+  unchanged, same queue and same 100ms spacing, ~950ms for five writes in both. The difference
+  people feel is entirely in when the tile updates, not in when the motors start.
+
 ## [4.4.0] - 2026-09-04
 
 Security hardening, from an audit of the whole plugin. No known vulnerability was

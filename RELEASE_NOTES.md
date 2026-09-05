@@ -38,7 +38,26 @@ User-facing notes for **homebridge-powerview-universal** releases. Use this file
 
 ---
 
-## Latest: 4.4.0 (2026-09-04)
+## Latest: 4.5.0 (2026-09-05)
+
+### Changed
+
+- **Shade tiles respond immediately again.** 4.3.0 kept the tile on the shade's real position and
+  animated it through the travel, which is more truthful but means the number sits still for up to
+  16 seconds after you tap. That felt slower, so the responsive behaviour is back as the default.
+- The truthful behaviour is still available as **`reportTravel`** in the plugin settings.
+
+### Notes
+
+- Shades were never actually slower to start moving. The command path is unchanged from the
+  original plugin — same queue, same spacing, about a second for five shades either way. Only the
+  moment the tile updates changed.
+- With the default setting, HomeKit shows the position you asked for rather than one that was
+  measured. If a shade fails to move, the tile will not reflect that until the shade is refreshed.
+
+---
+
+## 4.4.0 (2026-09-04)
 
 Security hardening from a full audit. Nothing here was being exploited — these
 close attack surface rather than patch a live hole.
