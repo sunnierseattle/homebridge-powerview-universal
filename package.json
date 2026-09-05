@@ -1,9 +1,9 @@
 {
   "name": "homebridge-powerview-universal",
-  "displayName": "PowerView",
+  "displayName": "PowerView (Gen 1 & 2)",
   "type": "module",
-  "version": "4.5.2",
-  "description": "Homebridge plugin for Hunter Douglas PowerView shades (Homebridge 2 compatible)",
+  "version": "4.5.3",
+  "description": "Hunter Douglas PowerView shades on Generation 1 and 2 hubs. Scenes, battery, tilt and top-down/bottom-up. Homebridge 1.8+ and 2.x.",
   "license": "ISC",
   "keywords": [
     "homebridge-plugin"

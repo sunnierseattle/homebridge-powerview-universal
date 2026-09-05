@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented in this file.
 
+## [4.5.3] - 2026-09-05
+
+### Changed
+
+- **The plugin now states which hubs it supports where people actually look.** The Homebridge UI
+  shows `displayName` and `description`, and neither mentioned hub generations — so someone with a
+  Generation 3 Gateway could install it and get nothing but `Failed to start PowerView platform:
+  NotFound`. Now `PowerView (Gen 1 & 2)`, with a description naming the generations and the
+  features.
+
+### Notes
+
+- The npm package name is unchanged. "universal" does overpromise, but renaming would strand the
+  published versions, force every install to be removed and re-added, and change `PLUGIN_NAME`
+  again — which is what drops cached accessories and loses their rooms and automations. It would
+  also age badly if Generation 3 support were ever added. `displayName` is presentational only, so
+  this carries none of that.
+
 ## [4.5.2] - 2026-09-05
 
 ### Fixed

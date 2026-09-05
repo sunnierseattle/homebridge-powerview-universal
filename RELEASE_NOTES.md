@@ -38,7 +38,17 @@ User-facing notes for **homebridge-powerview-universal** releases. Use this file
 
 ---
 
-## Latest: 4.5.2 (2026-09-05)
+## Latest: 4.5.3 (2026-09-05)
+
+### Changed
+
+- The plugin is now listed as **PowerView (Gen 1 & 2)** in the Homebridge UI, and its description
+  says which hubs it works with. Nothing about your configuration or accessories changes — this is
+  only how the plugin presents itself in search and on its settings page.
+
+---
+
+## 4.5.2 (2026-09-05)
 
 ### Fixed
 
