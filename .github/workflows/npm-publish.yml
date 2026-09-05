@@ -4,6 +4,11 @@ on:
   release:
     types: [created]
 
+# Least privilege: this workflow only reads the repository and publishes to npm
+# with its own token. It never needs to write back to GitHub.
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest

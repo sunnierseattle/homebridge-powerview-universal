@@ -33,6 +33,13 @@ const NETWORK_RETRY_DELAY_MS = 500;
  * every subsequent request forever.
  */
 const REQUEST_TIMEOUT_MS = 15000;
+/**
+ * Most the plugin will buffer from one hub response. A shade list for a large
+ * home is a few tens of kilobytes; anything approaching this is a hub fault or
+ * something pretending to be a hub. Without a ceiling the body is read straight
+ * into memory and can take the whole Homebridge process with it.
+ */
+const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 /** Lower runs first. HomeKit writes must not wait behind background reads. */
 export enum RequestPriority {
@@ -220,6 +227,72 @@ export class PowerViewHub {
     }
   }
 
+  /**
+   * Reads a JSON body with a hard ceiling on how much is buffered.
+   *
+   * Streamed rather than `res.json()` so an oversized body is abandoned partway
+   * instead of being fully materialised first. The request timeout does not help
+   * here: it bounds a stalled socket, not a fast enormous one.
+   */
+  private async readJsonCapped(res: Response, url: string): Promise<unknown> {
+    const declared = Number(res.headers.get('content-length'));
+    if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
+      throw new HubError(
+        `Hub response for ${url} declares ${declared} bytes, over the ${MAX_RESPONSE_BYTES} limit`,
+        HubErrorCode.ResponseTooLarge,
+      );
+    }
+
+    const stream = res.body;
+    if (!stream) {
+      return undefined;
+    }
+
+    const reader = stream.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        total += value.byteLength;
+        if (total > MAX_RESPONSE_BYTES) {
+          await reader.cancel();
+          throw new HubError(
+            `Hub response for ${url} exceeded ${MAX_RESPONSE_BYTES} bytes`,
+            HubErrorCode.ResponseTooLarge,
+          );
+        }
+        chunks.push(value);
+      }
+    } finally {
+      try {
+        reader.releaseLock();
+      } catch {
+        // Already released by cancel().
+      }
+    }
+
+    const text = Buffer.concat(chunks).toString('utf8');
+    if (text.trim().length === 0) {
+      return undefined;
+    }
+    try {
+      return JSON.parse(text);
+    } catch (err) {
+      // Distinct from Unreachable: the hub answered, it just answered badly.
+      throw new HubError(
+        `Hub returned malformed JSON for ${url}`,
+        HubErrorCode.MalformedBody,
+        undefined,
+        undefined,
+        { cause: err },
+      );
+    }
+  }
+
   private async delay(ms: number): Promise<void> {
     await new Promise((resolve) => {
       setTimeout(resolve, ms);
@@ -286,7 +359,7 @@ export class PowerViewHub {
           // overlap that makes the hub time out and truncate its JSON.
           const contentType = res.headers.get('content-type') ?? '';
           const parsed: unknown = contentType.includes('application/json')
-            ? await res.json()
+            ? await this.readJsonCapped(res, url)
             : undefined;
           return { response: res, body: parsed };
         }, options?.priority ?? RequestPriority.Read);

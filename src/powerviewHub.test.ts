@@ -4,6 +4,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { HubErrorCode, isHubError } from './errors.js';
 import { HubPosition, PowerViewHub } from './powerviewHub.js';
 
+/** A real Response, so body streaming and size limits behave as in production. */
+function hubResponse(body: unknown, status = 200, contentType = 'application/json'): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: contentType ? { 'content-type': contentType } : {},
+  });
+}
+
 const log = {
   debug: vi.fn(),
   info: vi.fn(),
@@ -24,18 +32,8 @@ describe('PowerViewHub.requestJson', () => {
     vi.useFakeTimers();
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce({
-        ok: false,
-        status: 423,
-        headers: new Headers({ 'content-type': 'application/json' }),
-        json: async () => ({ userData: { hubName: 'SHVi', serialNumber: 'abc' } }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        headers: new Headers({ 'content-type': 'application/json' }),
-        json: async () => ({ sceneIds: [], sceneData: [] }),
-      });
+      .mockResolvedValueOnce(hubResponse(({ userData: { hubName: 'SHVi', serialNumber: 'abc' } }), 423, 'application/json'))
+      .mockResolvedValueOnce(hubResponse(({ sceneIds: [], sceneData: [] }), 200, 'application/json'));
     vi.stubGlobal('fetch', fetchMock);
 
     const request = hub().requestJson<{ sceneIds: number[] }>('http://127.0.0.1/api/scenes');
@@ -47,12 +45,7 @@ describe('PowerViewHub.requestJson', () => {
   });
 
   it('maps HTTP 404 to NotFound', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: false,
-      status: 404,
-      headers: new Headers(),
-      json: async () => ({}),
-    }));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(hubResponse(({}), 404, '')));
 
     await expect(hub().requestJson('http://127.0.0.1/api/scenes')).rejects.toSatisfy(
       (err: unknown) => isHubError(err) && err.code === HubErrorCode.NotFound,
@@ -105,12 +98,7 @@ describe('PowerViewHub queue', () => {
 
   it('advances past a request whose URL cannot be built', async () => {
     vi.useFakeTimers();
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      headers: new Headers({ 'content-type': 'application/json' }),
-      json: async () => ({ shade: { id: 2, name: 'UmlnaHQ=' } }),
-    });
+    const fetchMock = vi.fn().mockResolvedValue(hubResponse(({ shade: { id: 2, name: 'UmlnaHQ=' } }), 200, 'application/json'));
     vi.stubGlobal('fetch', fetchMock);
 
     // A host that makes `new URL()` throw. Upstream builds the URL outside the
@@ -144,12 +132,7 @@ describe('PowerViewHub serialisation', () => {
       maxInFlight = Math.max(maxInFlight, inFlight);
       await new Promise((resolve) => setTimeout(resolve, 50));
       inFlight -= 1;
-      return {
-        ok: true,
-        status: 200,
-        headers: new Headers({ 'content-type': 'application/json' }),
-        json: async () => ({ firmware: { mainProcessor: { name: 'PowerView Hub' } } }),
-      };
+      return hubResponse(({ firmware: { mainProcessor: { name: 'PowerView Hub' } } }), 200, 'application/json');
     }));
 
     const h = hub();
@@ -174,12 +157,7 @@ describe('PowerViewHub.stopShade', () => {
   });
 
   it('sends motion stop, not jog', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      headers: new Headers({ 'content-type': 'application/json' }),
-      json: async () => ({ shade: { id: 7 } }),
-    });
+    const fetchMock = vi.fn().mockResolvedValue(hubResponse(({ shade: { id: 7 } }), 200, 'application/json'));
     vi.stubGlobal('fetch', fetchMock);
 
     await hub().stopShade(7);
@@ -205,27 +183,24 @@ describe('PowerViewHub request serialisation', () => {
 
     const fetchMock = vi.fn((url: string) => {
       events.push(`fetch:${url}`);
-      const first = url.endsWith('/first');
-      return Promise.resolve({
-        ok: true,
-        status: 200,
-        headers: new Headers({ 'content-type': 'application/json' }),
-        json: () => {
-          events.push(`body-start:${url}`);
-          if (!first) {
-            events.push(`body-end:${url}`);
-            return Promise.resolve({ ok: true });
-          }
-          // Headers have arrived, but the body is still streaming. The hub
-          // answers one request at a time, so nothing else may go out yet.
-          return new Promise((resolve) => {
+      if (url.endsWith('/first')) {
+        // Headers have arrived but the body is still streaming. The hub answers
+        // one request at a time, so nothing else may go out yet.
+        const stream = new ReadableStream({
+          start(controller) {
             releaseFirstBody = () => {
-              events.push(`body-end:${url}`);
-              resolve({ ok: true });
+              events.push('body-end:first');
+              controller.enqueue(new TextEncoder().encode('{"ok":true}'));
+              controller.close();
             };
-          });
-        },
-      });
+          },
+        });
+        return Promise.resolve(new Response(stream, {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      return Promise.resolve(hubResponse({ ok: true }));
     });
     vi.stubGlobal('fetch', fetchMock);
 
@@ -234,10 +209,8 @@ describe('PowerViewHub request serialisation', () => {
     const second = client.requestJson('http://127.0.0.1/second');
 
     // Drain every timer the interval spacing schedules. The second request must
-    // still be blocked, because the first response body has not been consumed.
+    // still be blocked, because the first response body is not yet consumed.
     await vi.advanceTimersByTimeAsync(5_000);
-
-    expect(events).toEqual(['fetch:http://127.0.0.1/first', 'body-start:http://127.0.0.1/first']);
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     releaseFirstBody?.();
@@ -246,11 +219,8 @@ describe('PowerViewHub request serialisation', () => {
 
     expect(events).toEqual([
       'fetch:http://127.0.0.1/first',
-      'body-start:http://127.0.0.1/first',
-      'body-end:http://127.0.0.1/first',
+      'body-end:first',
       'fetch:http://127.0.0.1/second',
-      'body-start:http://127.0.0.1/second',
-      'body-end:http://127.0.0.1/second',
     ]);
   });
 });
@@ -262,12 +232,7 @@ describe('PowerViewHub shade request coalescing', () => {
   });
 
   function shadeFetch() {
-    const fetchMock = vi.fn(() => Promise.resolve({
-      ok: true,
-      status: 200,
-      headers: new Headers({ 'content-type': 'application/json' }),
-      json: async () => ({ shade: { id: 1, name: 'U2hhZGU=' } }),
-    }));
+    const fetchMock = vi.fn(() => Promise.resolve(hubResponse(({ shade: { id: 1, name: 'U2hhZGU=' } }), 200, 'application/json')));
     vi.stubGlobal('fetch', fetchMock);
     return fetchMock;
   }
@@ -328,12 +293,7 @@ describe('PowerViewHub request priority', () => {
       const label = init?.method === 'PUT' ? 'write' : `read:${/(\d+)$/.exec(url)?.[1] ?? '?'}`;
       order.push(label);
       const body = { shade: { id: 1, name: 'U2hhZGU=' } };
-      const respond = () => ({
-        ok: true,
-        status: 200,
-        headers: new Headers({ 'content-type': 'application/json' }),
-        json: async () => body,
-      });
+      const respond = () => (hubResponse(body, 200, 'application/json'));
       if (order.length === 1) {
         // Hold the first request open so the rest pile up behind it.
         return new Promise((resolve) => {
@@ -374,12 +334,7 @@ describe('PowerViewHub transient failures', () => {
     // the request means the shade never moves at all.
     const fetchMock = vi.fn()
       .mockRejectedValueOnce(new TypeError('fetch failed'))
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        headers: new Headers({ 'content-type': 'application/json' }),
-        json: async () => ({ shade: { id: 1, name: 'U2hhZGU=' } }),
-      });
+      .mockResolvedValueOnce(hubResponse(({ shade: { id: 1, name: 'U2hhZGU=' } }), 200, 'application/json'));
     vi.stubGlobal('fetch', fetchMock);
 
     const request = hub().putShade(1, HubPosition.BOTTOM, 49151, 75);
@@ -412,12 +367,10 @@ describe('PowerViewHub scenes', () => {
 
   it('lists scenes defined on the hub', async () => {
     vi.useFakeTimers();
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      headers: new Headers({ 'content-type': 'application/json' }),
-      json: async () => ({ sceneIds: [7], sceneData: [{ id: 7, name: 'Q2xvc2VkArt', roomId: 3 }] }),
-    }));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(hubResponse({
+      sceneIds: [7],
+      sceneData: [{ id: 7, name: 'Q2xvc2VkArt', roomId: 3 }],
+    })));
 
     const request = hub().getScenes();
     await vi.advanceTimersByTimeAsync(1_000);
@@ -429,12 +382,7 @@ describe('PowerViewHub scenes', () => {
 
   it('activates a scene by id, at write priority', async () => {
     vi.useFakeTimers();
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      headers: new Headers({ 'content-type': 'application/json' }),
-      json: async () => ({ shadeIds: [1, 2, 3] }),
-    });
+    const fetchMock = vi.fn().mockResolvedValue(hubResponse(({ shadeIds: [1, 2, 3] }), 200, 'application/json'));
     vi.stubGlobal('fetch', fetchMock);
 
     const request = hub().activateScene(7);
@@ -448,15 +396,63 @@ describe('PowerViewHub scenes', () => {
     // A gen1 hub on build 827 answers an activation without shadeIds. Treating
     // that as an empty list logged "activated (0 shade(s))" while five shades
     // were moving.
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      headers: new Headers({ 'content-type': 'application/json' }),
-      json: async () => ({ scene: { id: 7 } }),
-    }));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(hubResponse(({ scene: { id: 7 } }), 200, 'application/json')));
 
     const request = hub().activateScene(7);
     await vi.advanceTimersByTimeAsync(1_000);
     await expect(request).resolves.toBeUndefined();
+  });
+});
+
+describe('PowerViewHub response limits', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('refuses a response larger than the cap instead of buffering it', async () => {
+    // A hostile or malfunctioning hub returning an unbounded body would
+    // otherwise be read entirely into memory, taking the whole Homebridge
+    // process down with it — every other plugin included.
+    const huge = 'x'.repeat(3 * 1024 * 1024);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(hubResponse({ junk: huge })));
+
+    await expect(hub().requestJson('http://127.0.0.1/api/shades')).rejects.toSatisfy(
+      (err: unknown) => isHubError(err) && err.code === HubErrorCode.ResponseTooLarge,
+    );
+  });
+
+  it('rejects on a declared content-length over the cap without reading', async () => {
+    const body = JSON.stringify({ ok: true });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, {
+      status: 200,
+      headers: {
+        'content-type': 'application/json',
+        'content-length': String(50 * 1024 * 1024),
+      },
+    })));
+
+    await expect(hub().requestJson('http://127.0.0.1/api/shades')).rejects.toSatisfy(
+      (err: unknown) => isHubError(err) && err.code === HubErrorCode.ResponseTooLarge,
+    );
+  });
+
+  it('reports malformed JSON as such, not as an unreachable hub', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{"shade": ', {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })));
+
+    await expect(hub().requestJson('http://127.0.0.1/api/shades')).rejects.toSatisfy(
+      (err: unknown) => isHubError(err) && err.code === HubErrorCode.MalformedBody,
+    );
+  });
+
+  it('still reads an ordinary response', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(hubResponse({ shadeData: [{ id: 1 }] })));
+    const res = await hub().requestJson<{ shadeData: Array<{ id: number }> }>(
+      'http://127.0.0.1/api/shades',
+    );
+    expect(res.data?.shadeData).toEqual([{ id: 1 }]);
   });
 });

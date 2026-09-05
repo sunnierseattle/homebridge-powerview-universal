@@ -73,15 +73,46 @@ export function resolveBatteryPollSettings(
   };
 }
 
+/** HomeKit names are short; anything longer is a mistake or an attack. */
+const MAX_NAME_LENGTH = 64;
+const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
+
+/**
+ * Strips control characters from a hub-supplied string.
+ *
+ * These names reach homebridge.log through a %s format and become HomeKit
+ * display names. A newline lets anyone able to rename a shade forge log
+ * entries, and an ANSI escape can rewrite the terminal of whoever reads them.
+ * C0, DEL and C1 all go.
+ */
+function sanitizeName(value: string): string {
+  // eslint-disable-next-line no-control-regex
+  return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').trim().slice(0, MAX_NAME_LENGTH);
+}
+
+function looksBase64(value: string): boolean {
+  return value.length % 4 === 0 && BASE64_PATTERN.test(value);
+}
+
 export function decodeBase64Name(encoded: string | undefined, fallback: string): string {
   if (!encoded) {
     return fallback;
   }
-  try {
-    return Buffer.from(encoded, 'base64').toString();
-  } catch {
-    return encoded;
+
+  // Buffer.from(x, 'base64') never throws — it silently discards invalid
+  // characters — so a plain name used to come back as mojibake and the old
+  // try/catch could never fire. Check the shape first instead.
+  let decoded = looksBase64(encoded)
+    ? Buffer.from(encoded, 'base64').toString('utf8')
+    : encoded;
+
+  // Valid base64 of non-UTF-8 bytes still decodes, to replacement characters.
+  if (decoded.includes('\uFFFD')) {
+    decoded = encoded;
   }
+
+  const clean = sanitizeName(decoded);
+  return clean.length > 0 ? clean : fallback;
 }
 
 /** A shade's reported positions, keyed by position kind. */
@@ -389,4 +420,21 @@ export function shadeKindForCapability(capability: number): ShadeKind | undefine
   case 9: return ShadeKind.DUAL_OVERLAPPED;
   default: return undefined;
   }
+}
+
+/**
+ * Validates the configured hub host.
+ *
+ * The value is interpolated into `http://${host}${path}`, so a host carrying a
+ * path, query, fragment, credentials or a scheme would send every request
+ * somewhere other than the hub. Only a hostname or IP, optionally with a port.
+ */
+const HUB_HOST_PATTERN = /^[A-Za-z0-9._-]+(?::\d{1,5})?$/;
+
+export function resolveHubHost(host: string | undefined, fallback: string): string {
+  const trimmed = typeof host === 'string' ? host.trim() : '';
+  if (trimmed.length === 0) {
+    return fallback;
+  }
+  return HUB_HOST_PATTERN.test(trimmed) ? trimmed : fallback;
 }

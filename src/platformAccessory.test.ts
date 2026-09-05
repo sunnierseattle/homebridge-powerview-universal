@@ -8,6 +8,14 @@ import { PowerViewPlatformAccessory } from './platformAccessory.js';
 import type { PowerViewShade } from './powerviewHub.js';
 import { ShadeKind, SUBTYPE, type PowerViewPlatformConfig, type ShadeContext } from './settings.js';
 
+/** A real Response, so body streaming and size limits behave as in production. */
+function hubResponse(body: unknown, status = 200, contentType = 'application/json'): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: contentType ? { 'content-type': contentType } : {},
+  });
+}
+
 /** 75% of the hub's 0-65535 range. */
 const HUB_75_PERCENT = 49151;
 /** 45 degrees of the hub's 0-32767 vane range. */
@@ -39,12 +47,7 @@ describe('PowerViewPlatformAccessory', () => {
   let platform: PowerViewPlatform;
 
   beforeEach(() => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      headers: new Headers({ 'content-type': 'application/json' }),
-      json: async () => ({}),
-    }));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(hubResponse(({}), 200, 'application/json')));
     harness = createHarness();
     platform = new PowerViewPlatform(harness.log, config(), harness.api);
   });

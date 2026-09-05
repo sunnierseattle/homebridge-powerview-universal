@@ -7,13 +7,16 @@ import { createHarness, type Harness } from './homebridge.harness.js';
 import { PowerViewPlatform } from './platform.js';
 import { SUBTYPE, type PowerViewPlatformConfig, type ShadeContext } from './settings.js';
 
+/** A real Response, so body streaming and size limits behave as in production. */
+function hubResponse(body: unknown, status = 200, contentType = 'application/json'): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: contentType ? { 'content-type': contentType } : {},
+  });
+}
+
 function jsonResponse(body: unknown) {
-  return {
-    ok: true,
-    status: 200,
-    headers: new Headers({ 'content-type': 'application/json' }),
-    json: async () => body,
-  };
+  return hubResponse(body, 200, 'application/json');
 }
 
 /** Answers every hub endpoint the platform touches during startup. */

@@ -7,6 +7,7 @@ import {
   formatShadeFirmware,
   isLowBattery,
   isWithinQuietHours,
+  resolveHubHost,
   resolveShadeCapability,
   shadeKindForCapability,
   lookupPosition,
@@ -418,5 +419,71 @@ describe('shadeKindForCapability', () => {
 
   it('treats top-down as its own kind, since its primary rail is reversed', () => {
     expect(shadeKindForCapability(6)).not.toEqual(shadeKindForCapability(0));
+  });
+});
+
+describe('decodeBase64Name hardening', () => {
+  const b64 = (text: string) => Buffer.from(text).toString('base64');
+
+  it('strips control characters that would forge log lines', () => {
+    // Shade names are hub-controlled and land in homebridge.log via %s. A
+    // newline lets anyone who can rename a shade fabricate log entries.
+    const decoded = decodeBase64Name(
+      b64('Kitchen\n[9/9/2026, 1:00:00 AM] [PowerView] forged'),
+      'fallback',
+    );
+
+    expect(decoded).not.toContain('\n');
+    expect(decoded.startsWith('Kitchen')).toBe(true);
+  });
+
+  it('strips ANSI escapes that would manipulate a terminal', () => {
+    const decoded = decodeBase64Name(b64('Front\u001b[31mRed\u001b[0m'), 'fallback');
+    expect(decoded).not.toContain('\u001b');
+  });
+
+  it('keeps a name that was never base64 rather than mangling it', () => {
+    // Buffer.from(x, 'base64') never throws — it silently drops invalid
+    // characters — so the old try/catch could not catch this.
+    expect(decodeBase64Name('Living Room!', 'fallback')).toBe('Living Room!');
+  });
+
+  it('caps absurdly long names', () => {
+    expect(decodeBase64Name(b64('x'.repeat(5_000)), 'fallback').length)
+      .toBeLessThanOrEqual(64);
+  });
+
+  it('falls back when sanitising leaves nothing usable', () => {
+    expect(decodeBase64Name(b64('   '), 'Shade 7')).toBe('Shade 7');
+  });
+
+  it('still decodes ordinary base64 names', () => {
+    expect(decodeBase64Name(b64('Front Left'), 'fallback')).toBe('Front Left');
+  });
+});
+
+describe('resolveHubHost', () => {
+  it('accepts hostnames, mDNS names and IP addresses', () => {
+    for (const host of ['192.168.4.38', 'powerview-hub.local', 'hub', 'hub.example.com', '10.0.0.1:8080']) {
+      expect(resolveHubHost(host, 'default')).toBe(host);
+    }
+  });
+
+  it('rejects a host carrying a path, query or fragment', () => {
+    // These are interpolated straight into `http://${host}${path}`, so anything
+    // structural here redirects the request somewhere else entirely.
+    for (const host of ['evil.com/api#', 'hub/../../etc', 'hub?x=1']) {
+      expect(resolveHubHost(host, 'default')).toBe('default');
+    }
+  });
+
+  it('rejects embedded credentials and scheme prefixes', () => {
+    expect(resolveHubHost('user:pass@hub.local', 'default')).toBe('default');
+    expect(resolveHubHost('http://hub.local', 'default')).toBe('default');
+  });
+
+  it('falls back when unset or empty', () => {
+    expect(resolveHubHost(undefined, 'default')).toBe('default');
+    expect(resolveHubHost('   ', 'default')).toBe('default');
   });
 });

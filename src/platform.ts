@@ -37,6 +37,7 @@ import {
   msUntilNextDailyRun,
   positionMapsEqual,
   resolveBatteryPollSettings,
+  resolveHubHost,
   resolveQuietHours,
   resolveShadeCapability,
   shadeKindForCapability,
@@ -118,9 +119,13 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
 
     registerProcessErrorHandlers(this.log, PLUGIN_NAME);
 
-    const host = typeof config.host === 'string' && config.host.length > 0
-      ? config.host
-      : 'powerview-hub.local';
+    const host = resolveHubHost(config.host, 'powerview-hub.local');
+    if (config.host && host !== config.host) {
+      this.log.warn(
+        'Ignoring configured host %j: it is not a plain hostname or IP address. Using %s.',
+        config.host, host,
+      );
+    }
     const requestIntervalMs = typeof config.requestIntervalMs === 'number'
       && Number.isFinite(config.requestIntervalMs)
       && config.requestIntervalMs >= 0

@@ -2,6 +2,50 @@
 
 All notable changes to this project are documented in this file.
 
+## [4.4.0] - 2026-09-04
+
+Security hardening, from an audit of the whole plugin. No known vulnerability was
+being exploited; these close attack surface and failure modes rather than fix a
+live compromise. The plugin has **no runtime dependencies**, so it carries no
+supply-chain surface, and `npm audit` reports zero for both runtime and dev.
+
+### Fixed
+
+- **Shade names can no longer forge log entries.** Names arrive base64-encoded from the hub and
+  are printed with `%s` and used as HomeKit display names, unfiltered. A name containing a newline
+  fabricated whole log lines; one containing ANSI escapes could rewrite the terminal of whoever
+  read the log. Control characters (C0, DEL, C1) are now stripped and names capped at 64
+  characters.
+- **A name that was never base64 is no longer mangled.** `Buffer.from(x, 'base64')` never throws —
+  it silently discards invalid characters — so the old `try/catch` was unreachable and a plain
+  name came back as mojibake. The encoding is now checked before decoding.
+- **Hub responses are capped at 2MB and read as a stream.** `res.json()` buffered whatever the hub
+  sent with no ceiling, so an oversized body could exhaust memory and take the whole Homebridge
+  process down, every other plugin with it. The request timeout does not help: it bounds a stalled
+  socket, not a fast enormous one. An over-large `content-length` is refused without reading.
+- **Malformed JSON is reported as malformed**, not as an unreachable hub. New `MalformedBody` and
+  `ResponseTooLarge` error codes.
+- **The configured `host` is validated.** It is interpolated into `http://${host}${path}`, so a
+  value carrying a path, query, fragment, embedded credentials or a scheme sent every request
+  somewhere other than the hub. Only a hostname or IP with an optional port is accepted; anything
+  else is refused with a warning and the default used.
+
+### Changed
+
+- The publish workflow declares `permissions: contents: read`, instead of taking the repository
+  default for `GITHUB_TOKEN`.
+- Test doubles for hub responses are real `Response` objects, so body streaming and size limits
+  behave as they do in production rather than being faked.
+
+### Notes
+
+- **The hub itself has no authentication and no TLS.** Anyone on your network can command your
+  shades without going near Homebridge. The plugin inherits this and cannot fix it; keep the hub
+  off guest or IoT-accessible networks if you segment them.
+- A request can still stall others for up to 45s (15s timeout x 3 attempts, all serialised). That
+  is a deliberate trade for not losing a command on a dropped connection. Reads are unaffected —
+  they answer from cache.
+
 ## [4.3.2] - 2026-09-04
 
 ### Fixed

@@ -3,6 +3,10 @@ import type { Logging } from 'homebridge';
 import type { HubUserData } from './powerviewHub.js';
 
 export enum HubErrorCode {
+  /** Hub sent more than the plugin is willing to buffer. */
+  ResponseTooLarge = 'ResponseTooLarge',
+  /** Hub sent JSON that does not parse. */
+  MalformedBody = 'MalformedBody',
   Unreachable = 'Unreachable',
   Timeout = 'Timeout',
   HttpError = 'HttpError',
