@@ -38,7 +38,21 @@ User-facing notes for **homebridge-powerview-universal** releases. Use this file
 
 ---
 
-## Latest: 4.1.2 (2026-09-04)
+## Latest: 4.2.0 (2026-09-04)
+
+### Highlights
+
+- **The Home app feels faster.** Position reads are answered instantly from the last known
+  position and refreshed in the background, instead of waiting on the hub. This removes the
+  "plugin slows down Homebridge / read handler was slow to respond" warnings, which appeared 15
+  times in a single startup on a five-shade system.
+- **Reads never wake a shade motor.** The background refresh behind a read was using the RF
+  round-trip that physically spins the shade; it now uses the cheap cached read, and the RF path
+  is reserved for when the hub genuinely has no position.
+
+---
+
+## 4.1.2 (2026-09-04)
 
 ### Highlights
 

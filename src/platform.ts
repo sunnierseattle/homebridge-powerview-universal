@@ -46,6 +46,7 @@ import {
   PLATFORM_NAME,
   SHADE_POLL_INTERVAL_MS,
   SHADE_REMOVAL_THRESHOLD,
+  BACKGROUND_REFRESH_INTERVAL_MS,
   FULLY_SUPPORTED_KINDS,
   ShadeKind,
   SUBTYPE,
@@ -89,6 +90,8 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
 
   /** Shades with a background refresh already in flight, so reads don't pile up. */
   private readonly pendingRefresh = new Set<number>();
+  /** When each shade last had a background read, so bursts don't stack up. */
+  private readonly lastBackgroundRefresh = new Map<number, number>();
   private readonly batteryRefreshDisabled = new Set<number>();
   private readonly posKindErrorLogged = new Set<number>();
   private batteryPollTimer?: ReturnType<typeof setTimeout>;
@@ -604,6 +607,24 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
   ): Promise<void> {
     this.log.debug('getPosition %d/%d', shadeId, position);
 
+    // Answer from cache without awaiting the hub at all. Even a cached hub read
+    // is a serialised round-trip, and HomeKit reads every characteristic of
+    // every shade at once — the later ones then exceed its read budget and log
+    // "read handler was slow to respond". The cache survives restarts, so it is
+    // warm from the first read. refreshShades and strictErrors both opt into
+    // hitting the hub, so they keep the blocking path.
+    if (!this.refreshShades && !this.strictErrors) {
+      const cached = this.getCachedPosition(shadeId, position);
+      if (cached != null) {
+        // Answer first. scheduleBackgroundRefresh runs synchronously up to its
+        // first await, so scheduling ahead of the callback puts a fetch on the
+        // stack before HomeKit has its value.
+        callback(null, cached);
+        this.scheduleBackgroundRefresh(shadeId, position);
+        return;
+      }
+    }
+
     try {
       const value = await this.updatePosition(shadeId, position, this.refreshShades);
       if (!this.refreshShades && value == null) {
@@ -618,7 +639,7 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
         // and routinely exceeds HomeKit's read budget, which logged "read handler
         // didn't respond at all" and stalled the accessory. updateShade() pushes the
         // real value via updateCharacteristic as soon as the hub answers.
-        this.scheduleBackgroundRefresh(shadeId, position);
+        this.scheduleBackgroundRefresh(shadeId, position, true);
         callback(null, this.resolvePositionValue(shadeId, position, null));
       } else {
         callback(null, this.resolvePositionValue(shadeId, position, value));
@@ -634,16 +655,35 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
     }
   }
 
-  /** Refreshes a shade off the HomeKit read path, deduped per shade. */
-  private scheduleBackgroundRefresh(shadeId: number, position: HubPosition): void {
+  /**
+   * Refreshes a shade off the HomeKit read path, deduped per shade and rate
+   * limited per shade.
+   *
+   * `refresh` is the expensive kind: it wakes the motor over RF, takes seconds,
+   * and is what used to move shades at 05:54. It is only justified when the hub
+   * has no position at all. Servicing an ordinary read uses the cheap cached
+   * read, which never touches the radio.
+   */
+  private scheduleBackgroundRefresh(
+    shadeId: number,
+    position: HubPosition,
+    refresh = false,
+  ): void {
     if (this.pendingRefresh.has(shadeId)) {
       return;
     }
+
+    const last = this.lastBackgroundRefresh.get(shadeId) ?? 0;
+    if (!refresh && Date.now() - last < BACKGROUND_REFRESH_INTERVAL_MS) {
+      return;
+    }
+
     this.pendingRefresh.add(shadeId);
+    this.lastBackgroundRefresh.set(shadeId, Date.now());
     void (async () => {
       try {
-        this.log.debug('background refresh %d/%d', shadeId, position);
-        await this.updatePosition(shadeId, position, true);
+        this.log.debug('background refresh %d/%d (rf=%s)', shadeId, position, refresh);
+        await this.updatePosition(shadeId, position, refresh);
       } catch (err) {
         logError(this.log, `Background refresh failed for shade ${shadeId}:`, err);
       } finally {

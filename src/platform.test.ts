@@ -240,4 +240,83 @@ describe('PowerViewPlatform accessory removal', () => {
   });
 });
 
+describe('PowerViewPlatform.getPosition', () => {
+  let harness: Harness;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    harness = createHarness();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  const SHADE = { id: 1, name: 'U2hhZGU=', type: 1, positions: { posKind1: 1, position1: 49151 } };
+
+  async function readyPlatform(cfg = config()) {
+    const fetchMock = stubHub([SHADE]);
+    const platform = new PowerViewPlatform(harness.log, cfg, harness.api);
+    const done = platform.updateShades();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await done;
+    fetchMock.mockClear();
+    return { platform, fetchMock };
+  }
+
+  it('answers a warm cache before the hub is consulted', async () => {
+    const { platform, fetchMock } = await readyPlatform();
+
+    // HomeKit must be answered inside its read budget. A refresh behind the
+    // answer is fine and expected; waiting for one is what blew the budget once
+    // several shades were read at once, so order is the thing to assert.
+    const order: string[] = [];
+    fetchMock.mockImplementation(((...args: unknown[]) => {
+      order.push('hub');
+      return jsonResponse({ shade: { id: 1, name: 'U2hhZGU=' } }) as never;
+    }) as never);
+
+    await platform.getPosition(1, 1 /* BOTTOM */, (err, value) => {
+      order.push(`callback:${String(value)}`);
+    });
+
+    expect(order[0]).toBe('callback:75');
+  });
+
+  it('does not wake the motor over RF to service a read', async () => {
+    const { platform, fetchMock } = await readyPlatform();
+
+    await platform.getPosition(1, 1, vi.fn());
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    const refreshed = fetchMock.mock.calls
+      .map((c) => String(c[0]))
+      .filter((url) => url.includes('refresh=true'));
+    expect(refreshed).toEqual([]);
+  });
+
+  it('still asks the hub when nothing is cached', async () => {
+    const { platform, fetchMock } = await readyPlatform();
+    const callback = vi.fn();
+
+    const done = platform.getPosition(99, 1, callback);
+    await vi.advanceTimersByTimeAsync(5_000);
+    await done;
+
+    expect(fetchMock).toHaveBeenCalled();
+    expect(callback).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps blocking reads under strictErrors', async () => {
+    const { platform, fetchMock } = await readyPlatform(config({ strictErrors: true }));
+
+    const done = platform.getPosition(1, 1, vi.fn());
+    await vi.advanceTimersByTimeAsync(5_000);
+    await done;
+
+    expect(fetchMock).toHaveBeenCalled();
+  });
+});
+
 export type { PlatformAccessory, ShadeContext };

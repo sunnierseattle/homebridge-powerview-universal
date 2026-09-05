@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented in this file.
 
+## [4.2.0] - 2026-09-04
+
+### Changed
+
+- **HomeKit position reads no longer wait on the hub.** The non-blocking work in 1061351 removed
+  only the RF refresh from the read path; every read still awaited a cached hub round-trip. Those
+  are serialised, so opening the Home app — which reads every characteristic of every shade at
+  once — queued them and the later ones exceeded HomeKit's budget, logging "read handler was slow
+  to respond" (15 in one startup on a five-shade system). A read with a cached position now
+  answers immediately and refreshes behind the answer. `refreshShades` and `strictErrors` both opt
+  into hitting the hub and keep the blocking path.
+- **Background refreshes no longer wake the motor.** `scheduleBackgroundRefresh` always passed
+  `refresh=true`, an RF round-trip that spins the shade and takes seconds. That is now reserved
+  for the case it was meant for — the hub having no position at all. Servicing an ordinary read
+  uses the cheap cached read, rate limited to one per shade per
+  `BACKGROUND_REFRESH_INTERVAL_MS` (10s) so a burst of reads cannot stack up.
+
 ## [4.1.2] - 2026-09-04
 
 ### Fixed

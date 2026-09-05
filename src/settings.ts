@@ -19,6 +19,9 @@ export const SHADE_POLL_INTERVAL_MS = 30_000;
  */
 export const SHADE_REMOVAL_THRESHOLD = 3;
 
+/** Minimum gap between cheap background reads of the same shade. */
+export const BACKGROUND_REFRESH_INTERVAL_MS = 10_000;
+
 /**
  * Default local time for the optional daily battery poll (API: updateBatteryLevel).
  *
