@@ -608,7 +608,7 @@ export class PowerViewHub {
    * together — issuing a write per shade cannot match it, because each is a
    * separate RF command.
    */
-  async activateScene(sceneId: number): Promise<number[]> {
+  async activateScene(sceneId: number): Promise<number[] | undefined> {
     const url = new URL(this.baseUrl('/api/scenes'));
     url.searchParams.set('sceneId', String(sceneId));
     const json = await this.fetchJson<{ shadeIds?: number[] }>(
@@ -616,7 +616,9 @@ export class PowerViewHub {
       undefined,
       RequestPriority.Write,
     );
-    return json.shadeIds ?? [];
+    // Undefined, not empty: a gen1 hub answers without shadeIds, and defaulting
+    // to [] logged "activated (0 shade(s))" while five shades were moving.
+    return Array.isArray(json.shadeIds) ? json.shadeIds : undefined;
   }
 
   /** Halts a shade mid-travel (HomeKit HoldPosition). */

@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented in this file.
 
+## [4.3.1] - 2026-09-04
+
+### Fixed
+
+- **Scene activation no longer reports a shade count it does not have.** `activateScene` defaulted
+  a missing `shadeIds` to an empty list, so a gen1 hub — which answers an activation without that
+  field — produced `Scene 4102 activated (0 shade(s))` while five shades were visibly moving. The
+  count is now logged only when the hub supplies one.
+
+### Notes
+
+- Scene activation is no longer unverified: it was confirmed end to end against a live scene on a
+  gen1 hub (build 827), activated from the HomeKit switch, moving five shades to the scene's
+  position.
+
 ## [4.3.0] - 2026-09-04
 
 ### Added

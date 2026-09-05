@@ -38,7 +38,23 @@ User-facing notes for **homebridge-powerview-universal** releases. Use this file
 
 ---
 
-## Latest: 4.3.0 (2026-09-04)
+## Latest: 4.3.1 (2026-09-04)
+
+First release published to npm.
+
+### Fixed
+
+- Activating a scene logged `(0 shade(s))` even when it moved several. The count is now shown only
+  when the hub reports one.
+
+### Notes
+
+- Scene activation has now been confirmed end to end against a live scene on a gen1 hub, tapped
+  from the Home app — the 4.3.0 caveat about it being untested no longer applies.
+
+---
+
+## 4.3.0 (2026-09-04)
 
 ### Highlights
 

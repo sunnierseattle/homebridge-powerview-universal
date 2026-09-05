@@ -442,4 +442,21 @@ describe('PowerViewHub scenes', () => {
     await expect(request).resolves.toEqual([1, 2, 3]);
     expect(String(fetchMock.mock.calls[0][0])).toContain('sceneId=7');
   });
+
+  it('reports an unknown shade count when the hub omits one', async () => {
+    vi.useFakeTimers();
+    // A gen1 hub on build 827 answers an activation without shadeIds. Treating
+    // that as an empty list logged "activated (0 shade(s))" while five shades
+    // were moving.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({ scene: { id: 7 } }),
+    }));
+
+    const request = hub().activateScene(7);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await expect(request).resolves.toBeUndefined();
+  });
 });

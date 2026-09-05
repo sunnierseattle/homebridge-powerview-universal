@@ -913,7 +913,11 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
         }
         void this.hub.activateScene(sceneId)
           .then((shadeIds) => {
-            this.log.info('Scene %d activated (%d shade(s))', sceneId, shadeIds.length);
+            if (shadeIds) {
+              this.log.info('Scene %d activated (%d shade(s))', sceneId, shadeIds.length);
+            } else {
+              this.log.info('Scene %d activated', sceneId);
+            }
             callback(null);
           })
           .catch((err) => {
