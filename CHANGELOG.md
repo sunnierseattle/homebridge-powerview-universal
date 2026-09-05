@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented in this file.
 
+## [4.5.2] - 2026-09-05
+
+### Fixed
+
+- **`requestIntervalMs` advertised the wrong default.** The UI schema said `25`, the value that
+  caused a gen1 hub to drop connections and lose two of five shades from a group move in 4.1.0.
+  The code default went back to `100` in 4.1.1 but the schema was not updated, so anyone accepting
+  the value the UI showed would have reproduced the fault.
+
+### Changed
+
+- README brought up to date. Several claims had become false: it said scenes were "probed at
+  startup for future use but not exposed as HomeKit accessories yet", that battery levels refresh
+  "about every 6 hours", and that Hold jogs the shade. It also documented four of the sixteen
+  configuration options, and quoted a log message the plugin no longer emits. Adds a "What this
+  fork changes" section and documents scenes.
+
 ## [4.5.1] - 2026-09-05
 
 ### Fixed

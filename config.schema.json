@@ -115,10 +115,10 @@
       "requestIntervalMs": {
         "title": "Hub request spacing (ms)",
         "type": "integer",
-        "default": 25,
+        "default": 100,
         "minimum": 0,
         "maximum": 1000,
-        "description": "Delay between requests to the hub. The hub answers one at a time, and this spacing sits on top of that. Lower feels faster; raise it if your hub returns errors or truncated responses under load."
+        "description": "Delay between requests to the hub, which answers one at a time. Lowering it feels faster but a legacy hub drops connections when commands arrive too quickly \u2014 25ms was tried and lost shades from group moves. Raise it if your hub returns errors or truncated responses under load."
       },
       "exposeScenes": {
         "title": "Expose hub scenes as switches",

@@ -38,7 +38,22 @@ User-facing notes for **homebridge-powerview-universal** releases. Use this file
 
 ---
 
-## Latest: 4.5.1 (2026-09-05)
+## Latest: 4.5.2 (2026-09-05)
+
+### Fixed
+
+- The plugin settings screen showed `25` as the default hub request spacing. That value makes a
+  Generation 1 hub drop connections and lose shades from group moves; the real default is `100`.
+  If you saved settings and picked up `25`, change it to `100`.
+
+### Changed
+
+- README rewritten: documents scenes, all sixteen configuration options, and what this fork
+  changes relative to the plugin it forked from.
+
+---
+
+## 4.5.1 (2026-09-05)
 
 ### Fixed
 
