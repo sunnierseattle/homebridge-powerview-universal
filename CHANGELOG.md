@@ -2,6 +2,39 @@
 
 All notable changes to this project are documented in this file.
 
+## [4.3.0] - 2026-09-04
+
+### Added
+
+- **Hub scenes are exposed as HomeKit switches** (`exposeScenes`, default on). Activating one is a
+  single hub call that the hub expands itself, so every motor gets its RF command at once. Driving
+  the same shades individually costs one serialised write each and they visibly stagger — this is
+  why a Pebble remote closes a group in unison and the plugin could not. Nothing appears unless
+  scenes are defined in the PowerView app. Switches are stateless: they fire and reset.
+- Scene accessories survive restarts, and are never removed on an empty scene list — the same
+  rule that stopped a partial response destroying shade accessories in 4.1.2.
+
+### Changed
+
+- **Shades are reported as moving rather than arrived.** `setPosition` fed the hub's PUT reply
+  into `CurrentPosition`, and that reply echoes the target, so a shade with seconds of travel left
+  read as already there; `PositionState` was hardcoded to `STOPPED`, the only value it ever took.
+  `TargetPosition` is now the commanded value, `CurrentPosition` stays where the shade is, and the
+  state reports `INCREASING`/`DECREASING` until the estimated travel elapses. A re-target
+  mid-travel cancels the previous arrival, which would otherwise land later and park the shade at
+  a position it had been steered away from.
+- **Startup no longer waits on the position sync.** It does an RF read per shade the hub has no
+  position for — five motors and 82 seconds from init to ready in one observed startup. It now
+  runs behind launch and abandons itself on shutdown.
+
+### Notes
+
+- Arrival is estimated from `SHADE_FULL_TRAVEL_MS` (20s for the full range) rather than polled.
+  Confirming it would mean an RF round-trip that wakes the motor again the instant it stopped. Any
+  later refresh corrects the value.
+- Scene **activation** is implemented against the documented PowerView v2 API but has not been
+  verified against a live scene, because the hub it was developed on has none defined.
+
 ## [4.2.0] - 2026-09-04
 
 ### Changed

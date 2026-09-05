@@ -38,7 +38,32 @@ User-facing notes for **homebridge-powerview-universal** releases. Use this file
 
 ---
 
-## Latest: 4.2.0 (2026-09-04)
+## Latest: 4.3.0 (2026-09-04)
+
+### Highlights
+
+- **Scenes, for shades that move together.** Any scene you define in the PowerView app now appears
+  as a HomeKit switch. Activating it is one command to the hub, which moves the whole group at
+  once — the same way a Pebble remote does, and something the plugin could not do by commanding
+  shades one at a time.
+- **The Home app stops claiming a shade has arrived before it has.** Position tiles now animate
+  while the shade travels, showing opening or closing, instead of jumping to the destination the
+  moment you tap.
+- **Homebridge starts much faster.** The startup position sync no longer holds up launch; one
+  observed startup took 82 seconds to become ready.
+
+### Added
+
+- `exposeScenes` (default on). Nothing appears unless you have scenes defined.
+
+### Notes
+
+- Scene activation follows the documented PowerView API but has not been tested against a live
+  scene. If you define one and it misbehaves, that is the reason.
+
+---
+
+## 4.2.0 (2026-09-04)
 
 ### Highlights
 

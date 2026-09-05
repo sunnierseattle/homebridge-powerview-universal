@@ -476,4 +476,86 @@ describe('PowerViewPlatform movement reporting', () => {
   });
 });
 
+describe('PowerViewPlatform scenes', () => {
+  let harness: Harness;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    harness = createHarness();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  function stubWithScenes(scenes: Array<Record<string, unknown>>) {
+    const fetchMock = vi.fn((url: string) => {
+      const u = String(url);
+      if (u.includes('sceneId=')) {
+        return Promise.resolve(jsonResponse({ shadeIds: [1] }));
+      }
+      if (u.includes('/api/scenes')) {
+        return Promise.resolve(jsonResponse({
+          sceneIds: scenes.map((x) => x.id), sceneData: scenes,
+        }));
+      }
+      if (u.includes('/api/userdata')) {
+        return Promise.resolve(jsonResponse({ userData: { hubName: 'SHVi', serialNumber: 'a' } }));
+      }
+      if (u.includes('/api/shades')) {
+        return Promise.resolve(jsonResponse({ shadeData: [], shadeIds: [] }));
+      }
+      return Promise.resolve(jsonResponse({}));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  it('exposes each hub scene as a switch', async () => {
+    stubWithScenes([{ id: 7, name: 'Q2xvc2Vk' }, { id: 8, name: 'T3Blbg==' }]);
+    const platform = new PowerViewPlatform(harness.log, config(), harness.api);
+
+    const done = platform.updateScenes();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await done;
+
+    expect(platform.sceneAccessories.size).toBe(2);
+    expect(harness.registered.map((a) => a.displayName)).toEqual(['Closed', 'Open']);
+  });
+
+  it('activates the scene in one hub call and resets the switch', async () => {
+    const fetchMock = stubWithScenes([{ id: 7, name: 'Q2xvc2Vk' }]);
+    const platform = new PowerViewPlatform(harness.log, config(), harness.api);
+    const done = platform.updateScenes();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await done;
+    fetchMock.mockClear();
+
+    const accessory = platform.sceneAccessories.get(7);
+    const service = accessory?.getService(Service.Switch);
+    service?.getCharacteristic(Characteristic.On).setValue(true);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    const activations = fetchMock.mock.calls
+      .map((c) => String(c[0]))
+      .filter((u) => u.includes('sceneId=7'));
+    expect(activations).toHaveLength(1);
+    // Stateless: a scene is a button, not something that stays on.
+    expect(service?.getCharacteristic(Characteristic.On).value).toBe(false);
+  });
+
+  it('registers nothing when the hub has no scenes', async () => {
+    stubWithScenes([]);
+    const platform = new PowerViewPlatform(harness.log, config(), harness.api);
+
+    const done = platform.updateScenes();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await done;
+
+    expect(platform.sceneAccessories.size).toBe(0);
+    expect(harness.registered).toHaveLength(0);
+  });
+});
+
 export type { PlatformAccessory, ShadeContext };

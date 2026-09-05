@@ -85,6 +85,11 @@ export const SUBTYPE = {
   TOP: 'top',
 } as const;
 
+/** Context stored on a scene accessory, to tell it from a shade on restore. */
+export interface SceneContext {
+  sceneId: number;
+}
+
 export interface PowerViewPlatformConfig extends PlatformConfig {
   host?: string;
   refreshShades?: boolean;
@@ -92,6 +97,8 @@ export interface PowerViewPlatformConfig extends PlatformConfig {
   strictErrors?: boolean;
   /** Spacing between serialised hub requests, ms. Raise it if your hub struggles. */
   requestIntervalMs?: number;
+  /** Expose hub scenes as HomeKit switches. Nothing appears if none are defined. */
+  exposeScenes?: boolean;
   /** Opt in to the daily battery poll. Off by default: it wakes the shade motor. */
   batteryPolling?: boolean;
   /** Local "HH:MM" time for the daily battery poll. Defaults to 14:00. */

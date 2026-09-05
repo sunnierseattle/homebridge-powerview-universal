@@ -403,3 +403,43 @@ describe('PowerViewHub transient failures', () => {
     expect(fetchMock.mock.calls.length).toBeGreaterThan(1);
   });
 });
+
+describe('PowerViewHub scenes', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('lists scenes defined on the hub', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({ sceneIds: [7], sceneData: [{ id: 7, name: 'Q2xvc2VkArt', roomId: 3 }] }),
+    }));
+
+    const request = hub().getScenes();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await expect(request).resolves.toEqual({
+      sceneIds: [7],
+      sceneData: [{ id: 7, name: 'Q2xvc2VkArt', roomId: 3 }],
+    });
+  });
+
+  it('activates a scene by id, at write priority', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({ shadeIds: [1, 2, 3] }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const request = hub().activateScene(7);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await expect(request).resolves.toEqual([1, 2, 3]);
+    expect(String(fetchMock.mock.calls[0][0])).toContain('sceneId=7');
+  });
+});

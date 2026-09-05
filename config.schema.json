@@ -119,6 +119,12 @@
         "minimum": 0,
         "maximum": 1000,
         "description": "Delay between requests to the hub. The hub answers one at a time, and this spacing sits on top of that. Lower feels faster; raise it if your hub returns errors or truncated responses under load."
+      },
+      "exposeScenes": {
+        "title": "Expose hub scenes as switches",
+        "type": "boolean",
+        "default": true,
+        "description": "Publish each PowerView scene as a HomeKit switch. Activating one is a single hub call that moves the whole group together, which individual shade commands cannot match. Nothing appears if you have no scenes defined in the PowerView app."
       }
     }
   }

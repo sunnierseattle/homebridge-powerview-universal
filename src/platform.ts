@@ -19,6 +19,7 @@ import { type HubCapabilities, probeHubCapabilities } from './hubCapabilities.js
 import {
   HubPosition,
   PowerViewHub,
+  type PowerViewScene,
   type PowerViewShade,
 } from './powerviewHub.js';
 import {
@@ -53,6 +54,7 @@ import {
   ShadeKind,
   SUBTYPE,
   type PowerViewPlatformConfig,
+  type SceneContext,
   type ShadeContext,
 } from './settings.js';
 
@@ -76,6 +78,7 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
   private readonly batteryPoll: BatteryPollSettings;
   private readonly quietHours: QuietHours;
   private readonly syncPositionsOnStart: boolean;
+  private readonly exposeScenes: boolean;
   private readonly refreshShades: boolean;
   private readonly pollShadesForUpdate: boolean;
   private readonly strictErrors: boolean;
@@ -96,6 +99,7 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
   private readonly lastBackgroundRefresh = new Map<number, number>();
   /** Travel timers per shade/position, so a re-target cancels the old arrival. */
   private readonly travelTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  public readonly sceneAccessories = new Map<number, PlatformAccessory<SceneContext>>();
   private readonly batteryRefreshDisabled = new Set<number>();
   private readonly posKindErrorLogged = new Set<number>();
   private batteryPollTimer?: ReturnType<typeof setTimeout>;
@@ -127,6 +131,7 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
     this.batteryPoll = resolveBatteryPollSettings(config);
     this.quietHours = resolveQuietHours(config);
     this.syncPositionsOnStart = config.syncPositionsOnStart !== false;
+    this.exposeScenes = config.exposeScenes !== false;
     this.refreshShades = config.refreshShades === true;
     this.pollShadesForUpdate = config.pollShadesForUpdate === true;
     this.strictErrors = config.strictErrors === true;
@@ -168,6 +173,7 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
       } else {
         await this.updateShades();
       }
+      await this.updateScenes();
       this.scheduleBatteryPoll();
 
       // Deliberately not awaited. The sync does an RF read per shade the hub has
@@ -266,6 +272,15 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
 
   configureAccessory(accessory: PlatformAccessory): void {
     try {
+      const sceneId = (accessory.context as Partial<SceneContext>).sceneId;
+      if (typeof sceneId === 'number' && Number.isFinite(sceneId)) {
+        const sceneAccessory = accessory as PlatformAccessory<SceneContext>;
+        this.log.info('Cached scene %d: %s', sceneId, sceneAccessory.displayName);
+        this.wireSceneSwitch(sceneAccessory);
+        this.sceneAccessories.set(sceneId, sceneAccessory);
+        return;
+      }
+
       const shadeAccessory = accessory as PlatformAccessory<ShadeContext>;
       const shadeId = shadeAccessory.context.shadeId;
 
@@ -822,6 +837,94 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
       logError(this.log, `setPosition failed for shade ${shadeId}/${position}:`, err);
       callback(err instanceof Error ? err : new Error(formatError(err)));
     }
+  }
+
+  /**
+   * Publishes one stateless switch per hub scene.
+   *
+   * A scene is the only way to move a group together: it is a single call the
+   * hub expands itself, so every motor gets its RF command at once. Driving the
+   * same shades individually costs one serialised write each and they visibly
+   * stagger.
+   */
+  async updateScenes(): Promise<void> {
+    if (!this.exposeScenes) {
+      return;
+    }
+
+    let scenes: PowerViewScene[];
+    try {
+      scenes = (await this.hub.getScenes()).sceneData;
+    } catch (err) {
+      logError(this.log, 'Failed to list scenes from hub:', err);
+      return;
+    }
+
+    const seen = new Set<number>();
+    for (const scene of scenes) {
+      if (typeof scene.id !== 'number' || !Number.isFinite(scene.id)) {
+        continue;
+      }
+      seen.add(scene.id);
+      if (!this.sceneAccessories.has(scene.id)) {
+        this.addSceneAccessory(scene);
+      }
+    }
+
+    // Same reasoning as shades: an empty or short list is not evidence a scene
+    // was deleted, and unregistering is irreversible for the user.
+    if (scenes.length === 0) {
+      return;
+    }
+    for (const [id, accessory] of [...this.sceneAccessories]) {
+      if (!seen.has(id)) {
+        this.log.info('Removing scene %d: %s', id, accessory.displayName);
+        this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+        this.sceneAccessories.delete(id);
+      }
+    }
+  }
+
+  private addSceneAccessory(scene: PowerViewScene): void {
+    const name = decodeBase64Name(scene.name, `Scene ${scene.id}`);
+    this.log.info('Adding scene %d: %s', scene.id, name);
+
+    const uuid = this.api.hap.uuid.generate(`scene:${scene.id}`);
+    const accessory = new this.api.platformAccessory<SceneContext>(name, uuid);
+    accessory.context.sceneId = scene.id;
+
+    this.wireSceneSwitch(accessory);
+    this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+    this.sceneAccessories.set(scene.id, accessory);
+  }
+
+  private wireSceneSwitch(accessory: PlatformAccessory<SceneContext>): void {
+    const sceneId = accessory.context.sceneId;
+    const service = accessory.getService(this.Service.Switch)
+      ?? accessory.addService(this.Service.Switch, accessory.displayName);
+
+    service
+      .getCharacteristic(this.Characteristic.On)
+      .removeAllListeners('set')
+      .on('set', (value, callback) => {
+        if (value !== true) {
+          callback(null);
+          return;
+        }
+        void this.hub.activateScene(sceneId)
+          .then((shadeIds) => {
+            this.log.info('Scene %d activated (%d shade(s))', sceneId, shadeIds.length);
+            callback(null);
+          })
+          .catch((err) => {
+            logError(this.log, `Failed to activate scene ${sceneId}:`, err);
+            callback(err instanceof Error ? err : new Error(formatError(err)));
+          })
+          .finally(() => {
+            // A scene is a button, not a state. Reset so it can be fired again.
+            service.updateCharacteristic(this.Characteristic.On, false);
+          });
+      });
   }
 
   /**

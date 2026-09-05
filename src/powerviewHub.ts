@@ -46,6 +46,14 @@ export enum HubPosition {
   VANES = 3,
 }
 
+export interface PowerViewScene {
+  id: number;
+  /** Base64, like shade names. */
+  name: string;
+  roomId?: number;
+  order?: number;
+}
+
 export interface ShadePositions {
   [key: string]: number;
 }
@@ -465,10 +473,11 @@ export class PowerViewHub {
     return json.firmware;
   }
 
-  async getScenes(): Promise<{ sceneIds: number[]; sceneData: unknown[] }> {
+  /** Scenes stored on the hub. `sceneData` is empty when none are defined. */
+  async getScenes(): Promise<{ sceneIds: number[]; sceneData: PowerViewScene[] }> {
     const json = await this.fetchJson<{
       sceneIds?: number[];
-      sceneData?: unknown[];
+      sceneData?: PowerViewScene[];
     }>(this.baseUrl('/api/scenes'));
     return {
       sceneIds: json.sceneIds ?? [],
@@ -590,6 +599,24 @@ export class PowerViewHub {
         callbacks: [settleShade(resolve, reject)],
       });
     });
+  }
+
+  /**
+   * Activates a scene and returns the shades it moved.
+   *
+   * This is one call the hub expands itself, which is how a group moves
+   * together — issuing a write per shade cannot match it, because each is a
+   * separate RF command.
+   */
+  async activateScene(sceneId: number): Promise<number[]> {
+    const url = new URL(this.baseUrl('/api/scenes'));
+    url.searchParams.set('sceneId', String(sceneId));
+    const json = await this.fetchJson<{ shadeIds?: number[] }>(
+      url.toString(),
+      undefined,
+      RequestPriority.Write,
+    );
+    return json.shadeIds ?? [];
   }
 
   /** Halts a shade mid-travel (HomeKit HoldPosition). */
