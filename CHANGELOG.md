@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [4.3.2] - 2026-09-04
+
+### Fixed
+
+- Lint error in the test suite that failed the release build (`no-unused-vars`). No runtime change.
+
 ## [4.3.1] - 2026-09-04
 
 ### Fixed

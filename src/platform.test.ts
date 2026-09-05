@@ -274,7 +274,7 @@ describe('PowerViewPlatform.getPosition', () => {
     // answer is fine and expected; waiting for one is what blew the budget once
     // several shades were read at once, so order is the thing to assert.
     const order: string[] = [];
-    fetchMock.mockImplementation(((...args: unknown[]) => {
+    fetchMock.mockImplementation((() => {
       order.push('hub');
       return jsonResponse({ shade: { id: 1, name: 'U2hhZGU=' } }) as never;
     }) as never);
