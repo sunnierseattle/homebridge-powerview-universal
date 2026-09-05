@@ -38,7 +38,36 @@ User-facing notes for **homebridge-powerview-universal** releases. Use this file
 
 ---
 
-## Latest: 4.3.1 (2026-09-04)
+## Latest: 4.4.0 (2026-09-04)
+
+Security hardening from a full audit. Nothing here was being exploited — these
+close attack surface rather than patch a live hole.
+
+### Fixed
+
+- Shade names from the hub are sanitised before they reach your logs or HomeKit. A crafted name
+  could previously forge log entries or inject terminal escape sequences.
+- Hub responses are capped at 2MB and streamed, so a faulty or hostile hub cannot exhaust memory
+  and take Homebridge down with it.
+- The `host` setting is validated, so a malformed value cannot redirect requests away from the hub.
+- A shade name that was never base64 is used as-is instead of being turned into gibberish.
+
+### Notes
+
+- **Your hub has no authentication or encryption.** Anyone on your network can control your shades
+  directly, without Homebridge. No plugin can change that — keep the hub off networks you share
+  with guests or untrusted devices.
+- The plugin has no runtime dependencies, so it adds no third-party code to your Homebridge
+  install.
+
+---
+
+## 4.3.2 (2026-09-04)
+
+- Scene activation logged `(0 shade(s))` even when it moved several; the count is shown only when
+  the hub reports one. Confirmed end to end against a live scene.
+
+## 4.3.1 (2026-09-04)
 
 First release published to npm.
 
