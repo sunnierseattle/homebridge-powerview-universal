@@ -45,6 +45,7 @@ import {
   PLUGIN_NAME,
   PLATFORM_NAME,
   SHADE_POLL_INTERVAL_MS,
+  SHADE_REMOVAL_THRESHOLD,
   FULLY_SUPPORTED_KINDS,
   ShadeKind,
   SUBTYPE,
@@ -81,6 +82,8 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
   private readonly forceVerticalShades: number[];
 
   private readonly lastPositions = new Map<number, PositionMap>();
+  /** Consecutive shade lists a known shade has been missing from. */
+  private readonly missingFromList = new Map<number, number>();
   private readonly positionsOmittedLogged = new Set<number>();
   private readonly unsupportedCapabilityLogged = new Set<number>();
 
@@ -406,10 +409,37 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
       }
     }
 
+    // Unregistering an accessory is destructive — HomeKit loses its room,
+    // its name and any automations referencing it, and none of that comes back
+    // when the shade reappears. A hub under load can answer with a short list,
+    // which once cost three of five shades. So a shade has to be missing from
+    // several consecutive lists before it is treated as genuinely gone, and an
+    // empty list is never evidence of anything.
+    if (shadeData.length === 0) {
+      this.log.debug('Hub returned no shades; keeping all %d accessories', this.accessories.size);
+      return;
+    }
+
     for (const [id, accessory] of [...this.accessories]) {
-      if (!newShades[id]) {
-        this.removeShadeAccessory(accessory);
+      if (newShades[id]) {
+        this.missingFromList.delete(id);
+        continue;
       }
+
+      const misses = (this.missingFromList.get(id) ?? 0) + 1;
+      this.missingFromList.set(id, misses);
+
+      if (misses < SHADE_REMOVAL_THRESHOLD) {
+        this.log.warn(
+          'Shade %d (%s) missing from the hub list (%d/%d). Keeping it: a partial '
+          + 'response would otherwise destroy the accessory.',
+          id, accessory.displayName, misses, SHADE_REMOVAL_THRESHOLD,
+        );
+        continue;
+      }
+
+      this.missingFromList.delete(id);
+      this.removeShadeAccessory(accessory);
     }
   }
 

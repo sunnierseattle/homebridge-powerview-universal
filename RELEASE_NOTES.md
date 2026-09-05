@@ -38,7 +38,23 @@ User-facing notes for **homebridge-powerview-universal** releases. Use this file
 
 ---
 
-## Latest: 4.1.1 (2026-09-04)
+## Latest: 4.1.2 (2026-09-04)
+
+### Highlights
+
+- **Shades can no longer vanish from HomeKit.** If the hub answered the shade-list request with a
+  short list — which it does under load — the plugin removed every missing shade from HomeKit
+  outright, losing its room and any automations using it. A shade now has to be missing from
+  three consecutive responses before it is removed, and an empty response never removes anything.
+
+### Notes
+
+- If shades disappeared on an earlier version, restart Homebridge and they will be re-added. You
+  may need to put them back in the right room in the Home app.
+
+---
+
+## 4.1.1 (2026-09-04)
 
 Fixes a regression in 4.1.0.
 

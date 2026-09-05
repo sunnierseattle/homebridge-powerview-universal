@@ -13,6 +13,13 @@ export const PLUGIN_NAME = 'homebridge-powerview-universal';
 export const SHADE_POLL_INTERVAL_MS = 30_000;
 
 /**
+ * Consecutive hub shade lists a shade must be absent from before its accessory
+ * is unregistered. Removal is irreversible for the user's rooms and automations,
+ * so a single short response must never trigger it.
+ */
+export const SHADE_REMOVAL_THRESHOLD = 3;
+
+/**
  * Default local time for the optional daily battery poll (API: updateBatteryLevel).
  *
  * The poll is opt-in — see resolveBatteryPollSettings. It is an RF round-trip

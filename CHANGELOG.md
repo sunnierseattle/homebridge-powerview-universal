@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
+## [4.1.2] - 2026-09-04
+
+### Fixed
+
+- **A partial hub response no longer destroys HomeKit accessories.** `updateShades()`
+  unregistered any accessory missing from a *single* `/api/shades` response. Upstream guarded
+  against the list request outright failing, but not against it coming back short — and a gen1
+  hub under load does answer short. Observed live: three of five shades were unregistered in one
+  poll, taking their rooms and automations with them, and "close all" then moved only the two
+  that survived. A shade must now be absent from `SHADE_REMOVAL_THRESHOLD` (3) consecutive lists
+  before its accessory is removed, each miss is logged, and an empty list never prunes anything.
+
 ## [4.1.1] - 2026-09-04
 
 ### Fixed

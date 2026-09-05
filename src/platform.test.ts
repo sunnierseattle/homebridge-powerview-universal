@@ -154,4 +154,90 @@ describe('PowerViewPlatform.updateShades', () => {
   });
 });
 
+describe('PowerViewPlatform accessory removal', () => {
+  let harness: Harness;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    harness = createHarness();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  const ALL = [
+    { id: 1, name: 'U2hhZGU=', type: 1, positions: { posKind1: 1, position1: 0 } },
+    { id: 2, name: 'U2hhZGU=', type: 1, positions: { posKind1: 1, position1: 0 } },
+    { id: 3, name: 'U2hhZGU=', type: 1, positions: { posKind1: 1, position1: 0 } },
+  ];
+
+  async function poll(platform: PowerViewPlatform) {
+    const done = platform.updateShades();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await done;
+  }
+
+  async function platformWithAll() {
+    stubHub(ALL);
+    const platform = new PowerViewPlatform(harness.log, config(), harness.api);
+    await poll(platform);
+    expect(platform.accessories.size).toBe(3);
+    return platform;
+  }
+
+  it('keeps accessories the hub omits from a single response', async () => {
+    const platform = await platformWithAll();
+
+    // One short response. A hub under load can answer with a partial list, and
+    // unregistering an accessory destroys its rooms and automations for good.
+    stubHub([ALL[0]]);
+    await poll(platform);
+
+    expect(platform.accessories.size).toBe(3);
+    expect(harness.unregistered).toHaveLength(0);
+  });
+
+  it('never prunes on an empty response', async () => {
+    const platform = await platformWithAll();
+
+    stubHub([]);
+    await poll(platform);
+    await poll(platform);
+    await poll(platform);
+    await poll(platform);
+
+    expect(platform.accessories.size).toBe(3);
+    expect(harness.unregistered).toHaveLength(0);
+  });
+
+  it('removes a shade genuinely gone from several consecutive responses', async () => {
+    const platform = await platformWithAll();
+
+    stubHub([ALL[0], ALL[1]]);
+    await poll(platform);
+    await poll(platform);
+    await poll(platform);
+
+    expect(platform.accessories.has(3)).toBe(false);
+    expect(harness.unregistered).toHaveLength(1);
+  });
+
+  it('forgives a shade that reappears before the threshold', async () => {
+    const platform = await platformWithAll();
+
+    stubHub([ALL[0], ALL[1]]);
+    await poll(platform);
+    stubHub(ALL);
+    await poll(platform);
+    stubHub([ALL[0], ALL[1]]);
+    await poll(platform);
+    await poll(platform);
+
+    expect(platform.accessories.size).toBe(3);
+    expect(harness.unregistered).toHaveLength(0);
+  });
+});
+
 export type { PlatformAccessory, ShadeContext };
