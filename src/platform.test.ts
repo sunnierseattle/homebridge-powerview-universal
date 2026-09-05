@@ -1,9 +1,11 @@
 import type { PlatformAccessory } from 'homebridge';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { Characteristic, Service } from '@homebridge/hap-nodejs';
+
 import { createHarness, type Harness } from './homebridge.harness.js';
 import { PowerViewPlatform } from './platform.js';
-import type { PowerViewPlatformConfig, ShadeContext } from './settings.js';
+import { SUBTYPE, type PowerViewPlatformConfig, type ShadeContext } from './settings.js';
 
 function jsonResponse(body: unknown) {
   return {
@@ -316,6 +318,161 @@ describe('PowerViewPlatform.getPosition', () => {
     await done;
 
     expect(fetchMock).toHaveBeenCalled();
+  });
+});
+
+describe('PowerViewPlatform startup', () => {
+  let harness: Harness;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    harness = createHarness();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('finishes launching without waiting for the RF position sync', async () => {
+    const order: string[] = [];
+    // A shade with no position forces the sync to do the slow RF read, which is
+    // seconds per shade and must not hold up Homebridge's launch.
+    const fetchMock = vi.fn((url: string) => {
+      if (String(url).includes('refresh=true')) {
+        order.push('rf-refresh');
+        return new Promise(() => {}); // never settles
+      }
+      if (String(url).includes('/api/userdata')) {
+        return Promise.resolve(jsonResponse({
+          userData: { hubName: 'SHVi', serialNumber: 'abc' },
+        }));
+      }
+      if (/\/api\/shades\/\d+/.test(String(url))) {
+        return Promise.resolve(jsonResponse({ shade: { id: 1, name: 'U2hhZGU=', type: 1 } }));
+      }
+      if (String(url).includes('/api/shades')) {
+        return Promise.resolve(jsonResponse({
+          shadeData: [{ id: 1, name: 'U2hhZGU=', type: 1 }],
+          shadeIds: [1],
+        }));
+      }
+      return Promise.resolve(jsonResponse({}));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const log = harness.log as unknown as { info: ReturnType<typeof vi.fn> };
+    log.info.mockImplementation((msg: string) => {
+      if (typeof msg === 'string' && msg.startsWith('Battery poll:')) {
+        order.push('launch-complete');
+      }
+    });
+
+    const platform = new PowerViewPlatform(harness.log, config({ syncPositionsOnStart: true }), harness.api);
+    expect(platform).toBeDefined();
+    await harness.emit('didFinishLaunching');
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(order).toContain('launch-complete');
+    expect(order.indexOf('launch-complete')).toBeLessThan(order.indexOf('rf-refresh'));
+  });
+});
+
+describe('PowerViewPlatform movement reporting', () => {
+  let harness: Harness;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    harness = createHarness();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  const AT_ZERO = { id: 1, name: 'U2hhZGU=', type: 1, positions: { posKind1: 1, position1: 0 } };
+
+  async function ready() {
+    const fetchMock = stubHub([AT_ZERO]);
+    const platform = new PowerViewPlatform(harness.log, config(), harness.api);
+    const done = platform.updateShades();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await done;
+    const accessory = platform.accessories.get(1);
+    if (!accessory) {
+      throw new Error('shade 1 not registered');
+    }
+    const service = accessory.getServiceById(Service.WindowCovering, SUBTYPE.BOTTOM);
+    if (!service) {
+      throw new Error('no bottom service');
+    }
+    return { platform, service, fetchMock };
+  }
+
+  const current = (s: Service) => s.getCharacteristic(Characteristic.CurrentPosition).value;
+  const target = (s: Service) => s.getCharacteristic(Characteristic.TargetPosition).value;
+  const state = (s: Service) => s.getCharacteristic(Characteristic.PositionState).value;
+
+  it('reports the shade as moving, not already arrived', async () => {
+    const { platform, service } = await ready();
+
+    const done = platform.setPosition(1, 1 /* BOTTOM */, 80, vi.fn());
+    await vi.advanceTimersByTimeAsync(1_000);
+    await done;
+
+    // The shade physically takes seconds. Reporting it at 80 immediately makes
+    // the Home app show an arrival that has not happened.
+    expect(target(service)).toBe(80);
+    expect(current(service)).toBe(0);
+    expect(state(service)).toBe(Characteristic.PositionState.INCREASING);
+  });
+
+  it('settles at the target once travel time has passed', async () => {
+    const { platform, service } = await ready();
+
+    const done = platform.setPosition(1, 1, 80, vi.fn());
+    await vi.advanceTimersByTimeAsync(1_000);
+    await done;
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(current(service)).toBe(80);
+    expect(state(service)).toBe(Characteristic.PositionState.STOPPED);
+  });
+
+  it('reports closing when the target is below the current position', async () => {
+    const { platform, service } = await ready();
+
+    const up = platform.setPosition(1, 1, 90, vi.fn());
+    await vi.advanceTimersByTimeAsync(1_000);
+    await up;
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    const down = platform.setPosition(1, 1, 10, vi.fn());
+    await vi.advanceTimersByTimeAsync(1_000);
+    await down;
+
+    expect(state(service)).toBe(Characteristic.PositionState.DECREASING);
+    expect(current(service)).toBe(90);
+  });
+
+  it('re-targets cleanly when a second command arrives mid-travel', async () => {
+    const { platform, service } = await ready();
+
+    const first = platform.setPosition(1, 1, 80, vi.fn());
+    await vi.advanceTimersByTimeAsync(1_000);
+    await first;
+
+    const second = platform.setPosition(1, 1, 40, vi.fn());
+    await vi.advanceTimersByTimeAsync(1_000);
+    await second;
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    // The first move's settle timer must not land after the second and park the
+    // shade at a position it was re-targeted away from.
+    expect(target(service)).toBe(40);
+    expect(current(service)).toBe(40);
+    expect(state(service)).toBe(Characteristic.PositionState.STOPPED);
   });
 });
 

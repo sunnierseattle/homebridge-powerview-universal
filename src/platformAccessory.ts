@@ -135,7 +135,7 @@ export class PowerViewPlatformAccessory {
       });
   }
 
-  /** Keeps current/target in sync and reports stopped so HomeKit/Homebridge do not show movement. */
+  /** Reports a shade at rest: current and target agree, nothing in motion. */
   private applyCoveringPosition(service: Service, value: number): void {
     if (Number.isNaN(value)) {
       return;
@@ -147,6 +147,42 @@ export class PowerViewPlatformAccessory {
       this.Characteristic.PositionState,
       this.Characteristic.PositionState.STOPPED,
     );
+  }
+
+  /**
+   * Reports a shade on its way somewhere: target is where it is headed, current
+   * stays where it actually is, and the state says which way it is travelling.
+   *
+   * Without this the plugin wrote the commanded position straight into
+   * CurrentPosition, so the Home app showed the shade arrived the instant the
+   * command was sent while the motor still had seconds of travel left.
+   */
+  reportMovement(position: HubPosition, from: number, to: number): void {
+    const service = position === HubPosition.TOP
+      ? this.resolveWindowCoveringService(SUBTYPE.TOP)
+      : this.resolveWindowCoveringService(SUBTYPE.BOTTOM);
+    if (!service) {
+      return;
+    }
+
+    service.updateCharacteristic(this.Characteristic.TargetPosition, to);
+    service.updateCharacteristic(this.Characteristic.CurrentPosition, from);
+    service.updateCharacteristic(
+      this.Characteristic.PositionState,
+      to > from
+        ? this.Characteristic.PositionState.INCREASING
+        : this.Characteristic.PositionState.DECREASING,
+    );
+  }
+
+  /** Reports arrival at `value`, ending a movement started by reportMovement. */
+  reportArrival(position: HubPosition, value: number): void {
+    const service = position === HubPosition.TOP
+      ? this.resolveWindowCoveringService(SUBTYPE.TOP)
+      : this.resolveWindowCoveringService(SUBTYPE.BOTTOM);
+    if (service) {
+      this.applyCoveringPosition(service, value);
+    }
   }
 
   configure(): void {

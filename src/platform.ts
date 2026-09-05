@@ -47,6 +47,8 @@ import {
   SHADE_POLL_INTERVAL_MS,
   SHADE_REMOVAL_THRESHOLD,
   BACKGROUND_REFRESH_INTERVAL_MS,
+  SHADE_FULL_TRAVEL_MS,
+  SHADE_MIN_TRAVEL_MS,
   FULLY_SUPPORTED_KINDS,
   ShadeKind,
   SUBTYPE,
@@ -92,6 +94,8 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
   private readonly pendingRefresh = new Set<number>();
   /** When each shade last had a background read, so bursts don't stack up. */
   private readonly lastBackgroundRefresh = new Map<number, number>();
+  /** Travel timers per shade/position, so a re-target cancels the old arrival. */
+  private readonly travelTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly batteryRefreshDisabled = new Set<number>();
   private readonly posKindErrorLogged = new Set<number>();
   private batteryPollTimer?: ReturnType<typeof setTimeout>;
@@ -149,6 +153,10 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
         clearTimeout(this.shadePollTimer);
         this.shadePollTimer = undefined;
       }
+      for (const timer of this.travelTimers.values()) {
+        clearTimeout(timer);
+      }
+      this.travelTimers.clear();
     });
   }
 
@@ -160,8 +168,14 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
       } else {
         await this.updateShades();
       }
-      await this.syncPositionsAtStartup();
       this.scheduleBatteryPoll();
+
+      // Deliberately not awaited. The sync does an RF read per shade the hub has
+      // no position for — seconds each, five motors on a cold cache — and
+      // Homebridge should not sit unlaunched through it.
+      void this.syncPositionsAtStartup().catch((err) => {
+        logError(this.log, 'Startup position sync failed:', err);
+      });
     } catch (err) {
       logError(this.log, 'Failed to start PowerView platform:', err);
     }
@@ -485,6 +499,10 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
 
     let refreshed = 0;
     for (const id of [...this.accessories.keys()]) {
+      if (this.shuttingDown) {
+        this.log.debug('Startup position sync abandoned: shutting down');
+        return;
+      }
       try {
         const { positions } = await this.updateShade(id);
         if (positions && Object.keys(positions).length > 0) {
@@ -789,15 +807,59 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
     }
 
     try {
-      const shade = await this.hub.putShade(shadeId, position, hubValue, value);
       const handler = this.handlers.get(shadeId);
-      const positions = handler?.updateShadeValues(shade, true) ?? null;
-      this.cachePositions(shadeId, positions);
+      const from = this.getCachedPosition(shadeId, position) ?? 0;
+
+      await this.hub.putShade(shadeId, position, hubValue, value);
+
+      // Deliberately not feeding the hub's response into CurrentPosition. Its
+      // PUT reply echoes the target, so doing that reported arrival the instant
+      // the command was sent while the motor still had seconds to run.
+      handler?.reportMovement(position, from, value);
+      this.scheduleArrival(shadeId, position, from, value);
       callback(null);
     } catch (err) {
       logError(this.log, `setPosition failed for shade ${shadeId}/${position}:`, err);
       callback(err instanceof Error ? err : new Error(formatError(err)));
     }
+  }
+
+  /**
+   * Marks the shade arrived once its estimated travel has elapsed.
+   *
+   * Estimated rather than polled: this hub reports no positions on a cached
+   * read, so confirming arrival would mean an RF round-trip that wakes the motor
+   * again the moment it stopped. The startup sync and any later refresh correct
+   * the value if the shade did not make it.
+   */
+  private scheduleArrival(
+    shadeId: number,
+    position: HubPosition,
+    from: number,
+    to: number,
+  ): void {
+    const key = `${shadeId}:${position}`;
+    const existing = this.travelTimers.get(key);
+    if (existing) {
+      // A re-target mid-travel: the old timer would otherwise land later and
+      // park the shade at a position it was already steered away from.
+      clearTimeout(existing);
+    }
+
+    const distance = Math.abs(to - from);
+    const travel = Math.max(
+      SHADE_MIN_TRAVEL_MS,
+      Math.round(SHADE_FULL_TRAVEL_MS * distance / 100),
+    );
+
+    this.travelTimers.set(key, setTimeout(() => {
+      this.travelTimers.delete(key);
+      if (this.shuttingDown) {
+        return;
+      }
+      this.handlers.get(shadeId)?.reportArrival(position, to);
+      this.cachePositions(shadeId, { [position]: to });
+    }, travel));
   }
 
   async jogShade(shadeId: number): Promise<Partial<Record<HubPosition, number>> | null> {
