@@ -20,6 +20,7 @@ import {
   HubPosition,
   PowerViewHub,
   type PowerViewScene,
+  type PowerViewSceneMember,
   type PowerViewShade,
 } from './powerviewHub.js';
 import {
@@ -900,6 +901,33 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
     }
   }
 
+  /**
+   * Brings HomeKit up to date after a scene runs.
+   *
+   * The hub expands the scene itself and its reply names no shades, so without
+   * this the Home app showed stale positions until something else happened to
+   * refresh each shade. The scene's membership carries the target positions, so
+   * this costs one cheap request and no RF wake.
+   */
+  private async applyScenePositions(sceneId: number): Promise<void> {
+    let members: PowerViewSceneMember[];
+    try {
+      members = await this.hub.getSceneMembers(sceneId);
+    } catch (err) {
+      logError(this.log, `Could not read members of scene ${sceneId}:`, err);
+      return;
+    }
+
+    for (const member of members) {
+      const handler = this.handlers.get(member.shadeId);
+      if (!handler || !member.positions) {
+        continue;
+      }
+      const positions = handler.applyHubPositions(member.shadeId, member.positions, true);
+      this.cachePositions(member.shadeId, positions);
+    }
+  }
+
   private addSceneAccessory(scene: PowerViewScene): void {
     const name = decodeBase64Name(scene.name, `Scene ${scene.id}`);
     this.log.info('Adding scene %d: %s', scene.id, name);
@@ -927,13 +955,14 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
           return;
         }
         void this.hub.activateScene(sceneId)
-          .then((shadeIds) => {
+          .then(async (shadeIds) => {
             if (shadeIds) {
               this.log.info('Scene %d activated (%d shade(s))', sceneId, shadeIds.length);
             } else {
               this.log.info('Scene %d activated', sceneId);
             }
             callback(null);
+            await this.applyScenePositions(sceneId);
           })
           .catch((err) => {
             logError(this.log, `Failed to activate scene ${sceneId}:`, err);

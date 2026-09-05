@@ -61,6 +61,13 @@ export interface PowerViewScene {
   order?: number;
 }
 
+export interface PowerViewSceneMember {
+  id: number;
+  sceneId: number;
+  shadeId: number;
+  positions?: ShadePositions;
+}
+
 export interface ShadePositions {
   [key: string]: number;
 }
@@ -692,6 +699,22 @@ export class PowerViewHub {
     // Undefined, not empty: a gen1 hub answers without shadeIds, and defaulting
     // to [] logged "activated (0 shade(s))" while five shades were moving.
     return Array.isArray(json.shadeIds) ? json.shadeIds : undefined;
+  }
+
+  /**
+   * The shades a scene moves, and where it moves them to.
+   *
+   * Activation is expanded by the hub, so nothing in the response says which
+   * shades moved. The membership does, and it carries each target position — so
+   * HomeKit can be brought up to date without an RF read per shade.
+   */
+  async getSceneMembers(sceneId: number): Promise<PowerViewSceneMember[]> {
+    const url = new URL(this.baseUrl('/api/scenemembers'));
+    url.searchParams.set('sceneId', String(sceneId));
+    const json = await this.fetchJson<{ sceneMemberData?: PowerViewSceneMember[] }>(
+      url.toString(),
+    );
+    return json.sceneMemberData ?? [];
   }
 
   /** Halts a shade mid-travel (HomeKit HoldPosition). */

@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented in this file.
 
+## [4.5.1] - 2026-09-05
+
+### Fixed
+
+- **HomeKit now reflects a scene as soon as it runs.** The hub expands a scene itself and its
+  reply names no shades, so nothing told the plugin where they went — the Home app kept showing
+  the old positions until something else happened to refresh each shade, which in practice meant
+  closing and reopening it. The scene's membership carries each target position, so activation now
+  reads it and updates the shades directly: one cheap request, no RF and no motor wake.
+
+### Changed
+
+- The position-applying half of `updateShadeValues` is now `applyHubPositions`. A scene knows its
+  members' positions but nothing about their batteries, and `updateAccessoryInformation` removes
+  the Battery service when handed a shade with no battery fields.
+
 ## [4.5.0] - 2026-09-05
 
 ### Changed

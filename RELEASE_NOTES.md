@@ -38,7 +38,18 @@ User-facing notes for **homebridge-powerview-universal** releases. Use this file
 
 ---
 
-## Latest: 4.5.0 (2026-09-05)
+## Latest: 4.5.1 (2026-09-05)
+
+### Fixed
+
+- **Running a scene updates the shades in the Home app straight away.** Previously the positions
+  did not change until you closed and reopened the app, because the hub carries out a scene itself
+  and never tells the plugin which shades it moved. The plugin now reads the scene's membership,
+  which records each target position, and updates HomeKit from that — without waking any motors.
+
+---
+
+## 4.5.0 (2026-09-05)
 
 ### Changed
 

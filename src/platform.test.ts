@@ -567,10 +567,63 @@ describe('PowerViewPlatform scenes', () => {
 
     const activations = fetchMock.mock.calls
       .map((c) => String(c[0]))
-      .filter((u) => u.includes('sceneId=7'));
+      // Members are fetched with the same query, so match the activation path.
+      .filter((u) => u.includes('/api/scenes?sceneId=7'));
     expect(activations).toHaveLength(1);
     // Stateless: a scene is a button, not something that stays on.
     expect(service?.getCharacteristic(Characteristic.On).value).toBe(false);
+  });
+
+  it('updates shade positions in HomeKit when a scene is activated', async () => {
+    // The hub moves the shades itself, so nothing otherwise tells the plugin
+    // where they went — the Home app kept showing stale positions until
+    // something happened to refresh each shade.
+    const fetchMock = vi.fn((url: string) => {
+      const u = String(url);
+      if (u.includes('sceneId=') && u.includes('/api/scenemembers')) {
+        return Promise.resolve(jsonResponse({
+          sceneMemberData: [
+            { id: 1, sceneId: 7, shadeId: 1, positions: { posKind1: 1, position1: 32768 } },
+          ],
+        }));
+      }
+      if (u.includes('sceneId=')) {
+        return Promise.resolve(jsonResponse({}));
+      }
+      if (u.includes('/api/scenes')) {
+        return Promise.resolve(jsonResponse({ sceneIds: [7], sceneData: [{ id: 7, name: 'Q2xvc2Vk' }] }));
+      }
+      if (u.includes('/api/userdata')) {
+        return Promise.resolve(jsonResponse({ userData: { hubName: 'SHVi', serialNumber: 'a' } }));
+      }
+      if (u.includes('/api/shades')) {
+        return Promise.resolve(jsonResponse({
+          shadeData: [{ id: 1, name: 'U2hhZGU=', type: 1, positions: { posKind1: 1, position1: 0 } }],
+          shadeIds: [1],
+        }));
+      }
+      return Promise.resolve(jsonResponse({}));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const platform = new PowerViewPlatform(harness.log, config(), harness.api);
+    const shades = platform.updateShades();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await shades;
+    const scenes = platform.updateScenes();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await scenes;
+
+    const service = platform.accessories.get(1)
+      ?.getServiceById(Service.WindowCovering, SUBTYPE.BOTTOM);
+    expect(service?.getCharacteristic(Characteristic.CurrentPosition).value).toBe(0);
+
+    platform.sceneAccessories.get(7)?.getService(Service.Switch)
+      ?.getCharacteristic(Characteristic.On).setValue(true);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    // 32768 of 65535 is 50%.
+    expect(service?.getCharacteristic(Characteristic.CurrentPosition).value).toBe(50);
   });
 
   it('registers nothing when the hub has no scenes', async () => {

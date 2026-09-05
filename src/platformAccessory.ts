@@ -5,7 +5,7 @@ import type {
   Service,
 } from 'homebridge';
 
-import { HubPosition, type PowerViewShade } from './powerviewHub.js';
+import { HubPosition, type PowerViewShade, type ShadePositions } from './powerviewHub.js';
 import type { PowerViewPlatform } from './platform.js';
 import {
   MAX_POSITION_KINDS,
@@ -384,7 +384,6 @@ export class PowerViewPlatformAccessory {
 
   updateShadeValues(shade: PowerViewShade, current = false): PositionMap {
     this.lastShade = shade;
-    const positions: PositionMap = {};
 
     if (shade.secondaryName && this.shadeType === ShadeKind.TOP_BOTTOM) {
       const topService = this.resolveWindowCoveringService(SUBTYPE.TOP);
@@ -395,6 +394,25 @@ export class PowerViewPlatformAccessory {
     }
 
     this.updateAccessoryInformation(shade);
+
+    return this.applyHubPositions(shade.id, shade.positions, current);
+  }
+
+  /**
+   * Applies hub-format positions to the HomeKit characteristics.
+   *
+   * Separate from updateShadeValues because a scene knows its members' target
+   * positions but nothing about their batteries or firmware — and
+   * updateAccessoryInformation removes the Battery service when handed a shade
+   * with no battery fields.
+   */
+  applyHubPositions(
+    shadeId: number,
+    hubPositions: ShadePositions | undefined,
+    current = false,
+  ): PositionMap {
+    const shade = { id: shadeId, positions: hubPositions } as PowerViewShade;
+    const positions: PositionMap = {};
 
     if (!shade.positions) {
       this.platform.cachePositions(shade.id, positions);
