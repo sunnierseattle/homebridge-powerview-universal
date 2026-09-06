@@ -15,7 +15,11 @@ import {
   logError,
   registerProcessErrorHandlers,
 } from './errors.js';
-import { type HubCapabilities, probeHubCapabilities } from './hubCapabilities.js';
+import {
+  detectGen3Gateway,
+  type HubCapabilities,
+  probeHubCapabilities,
+} from './hubCapabilities.js';
 import {
   HubPosition,
   PowerViewHub,
@@ -82,6 +86,7 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
   private readonly syncPositionsOnStart: boolean;
   private readonly exposeScenes: boolean;
   private readonly reportTravel: boolean;
+  private readonly hubHost: string;
   private readonly refreshShades: boolean;
   private readonly pollShadesForUpdate: boolean;
   private readonly strictErrors: boolean;
@@ -122,6 +127,7 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
     registerProcessErrorHandlers(this.log, PLUGIN_NAME);
 
     const host = resolveHubHost(config.host, 'powerview-hub.local');
+    this.hubHost = host;
     if (config.host && host !== config.host) {
       this.log.warn(
         'Ignoring configured host %j: it is not a plain hostname or IP address. Using %s.',
@@ -192,7 +198,34 @@ export class PowerViewPlatform implements DynamicPlatformPlugin {
       });
     } catch (err) {
       logError(this.log, 'Failed to start PowerView platform:', err);
+      await this.explainStartupFailure(err);
     }
+  }
+
+  /**
+   * Turns a bare NotFound into an answer.
+   *
+   * A Generation 3 Gateway serves a different API entirely, so every /api/ path
+   * this plugin uses returns 404 and the user sees only "NotFound" — with
+   * nothing to suggest the hub is simply the wrong generation rather than
+   * misconfigured or unreachable.
+   */
+  private async explainStartupFailure(err: unknown): Promise<void> {
+    if (!isHubError(err) || err.code !== HubErrorCode.NotFound) {
+      return;
+    }
+
+    const gen3 = await detectGen3Gateway(this.hubHost);
+    if (!gen3) {
+      return;
+    }
+
+    this.log.warn(
+      '%s answered at %s, which is the PowerView Generation 3 Gateway API. This plugin '
+      + 'supports Generation 1 and 2 hubs only — they speak a different API, so none of its '
+      + 'requests will work against a Gen 3 gateway.',
+      this.hubHost, gen3,
+    );
   }
 
   cachePositions(shadeId: number, positions: PositionMap | null): void {

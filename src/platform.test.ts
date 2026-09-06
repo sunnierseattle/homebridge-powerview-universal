@@ -639,4 +639,48 @@ describe('PowerViewPlatform scenes', () => {
   });
 });
 
+describe('PowerViewPlatform startup diagnostics', () => {
+  let harness: Harness;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    harness = createHarness();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('explains a Generation 3 Gateway instead of just reporting NotFound', async () => {
+    vi.stubGlobal('fetch', vi.fn((url: string) => (
+      String(url).includes('/home/shades')
+        ? Promise.resolve(jsonResponse({ shadeData: [] }))
+        : Promise.resolve(new Response('', { status: 404 }))
+    )));
+
+    const platform = new PowerViewPlatform(harness.log, config(), harness.api);
+    expect(platform).toBeDefined();
+    await harness.emit('didFinishLaunching');
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    const warned = (harness.log.warn as unknown as { mock: { calls: unknown[][] } }).mock.calls
+      .map((c) => String(c[0])).join('\n');
+    expect(warned).toMatch(/Generation 3/);
+  });
+
+  it('does not blame Gen 3 when the hub is merely unreachable', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')));
+
+    const platform = new PowerViewPlatform(harness.log, config(), harness.api);
+    expect(platform).toBeDefined();
+    await harness.emit('didFinishLaunching');
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    const warned = (harness.log.warn as unknown as { mock: { calls: unknown[][] } }).mock.calls
+      .map((c) => String(c[0])).join('\n');
+    expect(warned).not.toMatch(/Generation 3/);
+  });
+});
+
 export type { PlatformAccessory, ShadeContext };

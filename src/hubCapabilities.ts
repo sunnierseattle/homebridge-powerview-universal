@@ -95,3 +95,42 @@ export async function probeHubCapabilities(
 
   return capabilities;
 }
+
+/**
+ * Endpoints a Generation 3 Gateway answers and a Gen 1/2 hub does not.
+ *
+ * Gen 3 speaks an entirely different API — /home/... paths, with positions as
+ * 0-1 floats rather than the 0-65535 integers used here — so every request this
+ * plugin makes 404s against one. Documented paths, not observed: this was
+ * written without a Gen 3 gateway to test against.
+ */
+const GEN3_PROBE_PATHS = [
+  'http://{host}/home/shades',
+  'http://{host}:3002/home/shades',
+  'http://{host}/gateway',
+];
+
+const GEN3_PROBE_TIMEOUT_MS = 3000;
+
+/**
+ * Returns the endpoint that answered if the host looks like a Gen 3 Gateway.
+ *
+ * Only ever used to explain a startup failure, so it is deliberately timid: a
+ * short timeout, no retries, and a JSON content type required before claiming
+ * anything — an unrelated web server on that address must not be mistaken for a
+ * gateway.
+ */
+export async function detectGen3Gateway(host: string): Promise<string | undefined> {
+  for (const template of GEN3_PROBE_PATHS) {
+    const url = template.replace('{host}', host);
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(GEN3_PROBE_TIMEOUT_MS) });
+      if (res.ok && (res.headers.get('content-type') ?? '').includes('application/json')) {
+        return url;
+      }
+    } catch {
+      // Unreachable, refused or timed out: not evidence of anything.
+    }
+  }
+  return undefined;
+}

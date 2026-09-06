@@ -38,7 +38,23 @@ User-facing notes for **homebridge-powerview-universal** releases. Use this file
 
 ---
 
-## Latest: 4.5.3 (2026-09-05)
+## Latest: 4.6.0 (2026-09-05)
+
+### Added
+
+- **If you have a Generation 3 Gateway, the log now tells you.** Gen 3 hubs speak a different API,
+  so this plugin cannot talk to them at all — but it previously failed with only a `NotFound`
+  error, which looks like a wrong IP address or a firewall. It now checks and says plainly that
+  the hub is a Gen 3 Gateway and unsupported.
+
+### Notes
+
+- This does not add Gen 3 support; it only explains the failure.
+- The check runs only when startup has already failed, never on a working hub.
+
+---
+
+## 4.5.3 (2026-09-05)
 
 ### Changed
 

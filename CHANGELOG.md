@@ -2,6 +2,28 @@
 
 All notable changes to this project are documented in this file.
 
+## [4.6.0] - 2026-09-05
+
+### Added
+
+- **A Generation 3 Gateway is now named as the problem.** Gen 3 serves a different API entirely,
+  so every `/api/` path this plugin uses returns 404 and startup failed with a bare `NotFound` —
+  nothing to suggest the hub was the wrong generation rather than misconfigured or unreachable.
+  When startup fails with `NotFound`, the plugin probes the documented Gen 3 endpoints and, if one
+  answers with JSON, says so explicitly.
+
+### Notes
+
+- The probe is deliberately timid, because a false positive is worse than no message: a 3s
+  timeout, no retries, and a JSON content type required, so an unrelated web server or captive
+  portal on that address is not mistaken for a gateway. It only ever runs after a `NotFound`
+  startup failure, never on a working hub.
+- **The Gen 3 endpoints come from documentation, not observation** — there was no Gen 3 gateway to
+  test against. What is verified is the false-positive side: the probe was run against a real
+  Generation 1 hub (build 827) and correctly claimed nothing.
+- This does not add Gen 3 support. That would need a second hub client with its own endpoints and
+  position encoding.
+
 ## [4.5.3] - 2026-09-05
 
 ### Changed
